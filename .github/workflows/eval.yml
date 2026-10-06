@@ -16,48 +16,48 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
       - name: 安装依赖
         run: pip install pytest pytest-html
 
-      - name: 配置模型 API
+      - name: 校验密钥配置
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
         run: |
           if [ -z "$OPENAI_API_KEY" ]; then
-            echo "::error::未配置 OPENAI_API_KEY secret"
+            echo "::error::未配置 OPENAI_API_KEY secret，请前往仓库 Settings → Secrets 配置"
             exit 1
           fi
+          echo "密钥已配置，开始评测"
 
       - name: 执行质量评测
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
-        # 门禁不通过时退出码非 0，PR 会被标记为失败
+        # 门禁不通过时退出码非 0，PR 会被自动标记为失败
         run: |
           python -m pytest tests/ -v --tb=short \
             --html=reports/pytest_report.html \
             --junitxml=reports/junit.xml
 
-      - name: 生成 JSON 与 HTML 报告
+      - name: 生成 JSON / HTML / CSV 报告
         if: always()
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
+        # || true 保证评测失败时仍能产出报告，便于定位问题
         run: python tests/evaluator.py || true
 
       - name: 上传报告制品
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: eval-reports
           path: reports/
