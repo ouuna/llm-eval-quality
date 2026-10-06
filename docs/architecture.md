@@ -182,37 +182,60 @@ Bug 发现 → 复现 → 固化用例 → 修复 → 回归测试 → CI 保护
 
 ### 7. CI 配置本身需要静态检查
 
-Phase 13 写下的 `if: ${{ secrets.OPENAI_API_KEY != '' }}` 是**语法合法但语义无效**的：
-job 级 `if` 中不能出现 `${{ }}`。后果不是某个 job 失败，而是
-**整个 workflow 文件被GitHub 作废**，表现为 CI 1 秒内直接 Failure。
+Phase 13 写下的 `if: ${{ secrets.OPENAI_API_KEY != '' }}` 导致
+**整个 workflow 文件被GitHub 作废**——不是某个 job 失败，而是
+所有 job 都不会被创建（`jobs` API 返回 `total_count: 0`）。
 
-这个错误连续 3 次 push 都没被发现（#4 #5 #6 全挂），因为：
+**同一根因连续发作三次**，每次修法都对但认知不完整：
 
-- 本地 338项 Python 测试不解析 YAML，全绿也照样漏
-- 整个文件作废时看不到任何 job 的执行痕迹，不像「某个 job 变黄」那么显眼
-- 失败只花 1 秒，容易被当成「还在排队」而忽略
+| # | 写法 | 为什么还错 |
+|---|---|---|
+| 1 | `if: ${{ secrets.X != '' }}` | job 级 if 不能用表达式包裹 |
+| 2 | 注释里写 `${{ secrets.X }}` | **GitHub 解析注释里的表达式**，与代码同等对待 |
+| 3 | `if: secrets.X != ''` | **secrets 在 job 级 if 完全不可用，裸表达式也不行** |
 
-**修完又踩了第二次**：为了说明「job 级 if 不能写表达式」而写的**注释本身**
-含有 `${{ secrets }}`。GitHub 的表达式解析器**不区分注释与代码**，
-注释里的表达式同样被求值，于是再次触发完全相同的错误。
+第 3 次才拿到真相：GitHub 在**解析文件阶段**就求值 job 级 `if`，
+那时 `secrets` 尚未注入。正确做法是把密钥判断移到 **step 级**
+（step 级 `if` 可用 `secrets`），本项目改为：
 
-这催生了 `tests/check_workflow.py`，其判据不是「YAML 能否解析」
-（那两个错误在 YAML 层面都是合法的），而是
+```yaml
+- name: 密钥检查
+  id: keycheck
+  env:
+    KEY: ${{ secrets.OPENAI_API_KEY }}
+  run: |
+    if [ -z "$KEY" ]; then
+      echo "::warning::未配置 secret，跳过真实 API 评测"
+      echo "skip=true" >> $GITHUB_OUTPUT
+      exit 0
+    fi
+    echo "skip=false" >> $GITHUB_OUTPUT
+
+- name: 执行质量评测
+  if: steps.keycheck.outputs.skip == 'false'   # step 级 if，secrets 可用
+```
+
+**为什么前两次没发现**：本地 343 项Python 测试不解析 YAML，全绿也照样漏。
+而且错误藏在「整个文件作废」的表现形式下——
+看不到任何 job 痕迹，失败只用 1 秒，容易被当成「还在排队」。
+
+`tests/check_workflow.py` 的判据不是「YAML 能否解析」
+（这三次错误在 YAML 层面**全都合法**），而是
 **表达式引用的上下文在该位置是否可用**：
 
 | 位置 | 可用上下文 |
 |---|---|
-| job 级 `if` | `github` / `needs` / `inputs` / `vars` / `hashFiles` |
-| step 级 | 上述 + `secrets` / `steps` / `env` / `matrix` / `strategy` ... |
+| job 级 `if` | `github` / `needs` / `inputs` / `vars` / `hashFiles`（**无 secrets**） |
+| step 级 | 上述 + `secrets` / `steps` / `env` / `matrix` / `strategy` |
 | **注释** | **无** —— 但表达式仍会被解析 |
 
-该检查已加成 CI 的第一个 job（`workflow-lint`）。
-它必须排在最前且无前置依赖——否则 workflow 坏掉时
+该检查已加成 CI 的第一个 job（`workflow-lint`），
+必须排在最前且无前置依赖——否则 workflow 坏掉时
 lint job 自己也跑不了，形成死锁。
 
 **测试设计上的一条原则**：检查器自身的测试必须
-把错误**还原回去**并断言能被抓到，同时断言合法写法**不会**误报。
-一个见什么都报的检查器等于没检查器。
+把**每一次历史错误**还原回去并断言能被抓到，同时断言合法写法**不会**误报。
+一个见什么都报的检查器等于没检查器，所以「防误报」用例与「抓错」用例同等重要。
 
 通用教训：**凡是靠外部工具解释执行的文件（YAML / XML / shell 配置），
 Python 测试覆盖不到，必须单独加静态检查；

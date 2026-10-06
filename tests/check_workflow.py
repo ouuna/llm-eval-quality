@@ -79,19 +79,25 @@ def check_workflow(path=WORKFLOW_PATH):
         text = f.read()
     lines = text.splitlines()
 
-    # --- 坑 1：job 级 if 误用 ${{ }} ---
+    # --- 坑 1：job 级 if 里出现 secrets ---
+    #
+    # 历史踩坑记录（三次）：
+    #   1. job 级 if 写成表达式包裹的 secrets
+    #   2. 为解释坑 1 而写的注释里含表达式包裹的 secrets
+    #   3. 去掉包裹后写成裸 secrets 表达式 —— 仍然报同样的错
+    #
+    # 正确认知：job 级 if 在文件解析阶段求值，此时 secrets 尚未注入，
+    #因此 secrets 在该位置**任何形态都不可用**。
+    # 「无密钥则跳过」必须放到 step 级（step 级 if 可用 secrets）。
     for line_no, stmt in _job_level_if_lines(lines):
-        if "${{" not in stmt:
+        if "secrets" not in stmt:
             continue
-        for token in JOB_LEVEL_FORBIDDEN:
-            if token in stmt:
-                var = token[:-1]  # 去掉结尾的点号
-                issues.append(Issue(
-                    line_no,
-                    f"job 级 if 中使用了 {token}——此处只能写裸表达式。"
-                    f"正确写法：去掉 ${{{{ 与 }}}}，"
-                    f"如 if: {var}.XXX != ''"))
-                break
+        issues.append(Issue(
+            line_no,
+            "job 级 if 中引用了 secrets——该位置 secrets 完全不可用"
+            "（文件解析阶段求值，secrets 尚未注入），"
+            "无论是否用表达式包裹都会报Unrecognized named-value 并使整个文件作废。"
+            "请把密钥判断移到 step 级"))
 
     # --- 坑 1b：注释中出现 ${{ secrets... }} ---
     #
@@ -191,7 +197,12 @@ def check_workflow(path=WORKFLOW_PATH):
     return issues
 
 
-# 各位置可用的表达式上下文
+# 各位置可用的表达式上下文。
+#
+# 关键：job 级 if 里 secrets **完全不可用**，不是"不能包在表达式里"，
+# 而是连裸表达式都不行。GitHub 在解析 workflow 文件时就求值 job 级 if，
+# 那时 secrets 尚未注入。任何形式的 secrets 引用都会报
+# Unrecognized named-value: 'secrets' 并让整个文件作废。
 _ALLOWED_CONTEXTS = {
     "job_if": ("github", "needs", "inputs", "vars", "hashFiles"),
     "step": ("github", "steps", "inputs", "env", "secrets",

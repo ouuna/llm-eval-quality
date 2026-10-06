@@ -157,12 +157,15 @@ jobs:
     name: 质量评测
     runs-on: ubuntu-latest
     needs: [ unit-tests, offline-eval ]
-    # 无密钥时明确跳过，而非假装成功
-    # 注意：job 级 if 中不能写表达式包裹（美元双括号），
-    # GitHub 解析器会报 "Unrecognized named-value: 'secrets'"，
-    # 导致整个 workflow 文件作废。
-    # 注意：注释里也不能出现该包裹形式——GitHub 同样会解析注释里的表达式。
-    if: secrets.OPENAI_API_KEY != ''
+    # 注意：这里不能用 job 级 if 判断密钥。
+    #
+    # GitHub 在解析 workflow 文件时就求值 job 级 if，
+    # 那时 secrets 尚未注入，因此 job 级 if 里 secrets 完全不可用——
+    # 无论写成裸表达式还是表达式包裹形态，都会报
+    # Unrecognized named-value: 'secrets'，且整个 workflow 文件作废。
+    #
+    # 所以「无密钥则跳过」的逻辑放在 step 级（见下方密钥检查 step），
+    # 那时 secrets 已经可用。
 
     steps:
       - uses: actions/checkout@v7
@@ -185,25 +188,36 @@ jobs:
             echo "value=${{ inputs.dataset || 'full' }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: 配置校验
+      - name: 密钥检查
+        id: keycheck
         # CI 里继续使用 OPENAI_* 变量名（secrets 已按此配置，无需改动）。
         # 这同时验证了向后兼容路径：本地推荐用 EVAL_* 隔离环境变量，
         # 但程序读 OPENAI_* 依然有效。
+        #
+        # 密钥判断必须放在 step 级：job 级 if 在解析文件时就求值，
+        # 那时 secrets 尚未注入。step 级则已可用。
+        #
+        # 语义是「明确跳过」而非「假装成功」：无密钥时输出 warning
+        # 并让后续评测步骤跳过，而不是让 job 变绿假装跑过。
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
+          KEY: ${{ secrets.OPENAI_API_KEY }}
+          URL: ${{ secrets.OPENAI_BASE_URL }}
+          MODEL: ${{ secrets.OPENAI_MODEL_NAME }}
         run: |
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "::error::未配置 OPENAI_API_KEY secret"
-            exit 1
+          if [ -z "$KEY" ] || [ -z "$URL" ] || [ -z "$MODEL" ]; then
+            echo "::warning::未配置完整的 API secrets，跳过真实 API 评测"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
           fi
-          echo "模型：$OPENAI_MODEL_NAME"
+          echo "模型：$MODEL"
+          echo "接口：$URL"
           echo "数据集：${{ steps.ds.outputs.value }}"
           echo "---"
           python -m eval config
+          echo "skip=false" >> $GITHUB_OUTPUT
 
       - name: 执行质量评测
+        if: steps.keycheck.outputs.skip == 'false'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
@@ -215,7 +229,7 @@ jobs:
           python -m eval run --dataset "${{ steps.ds.outputs.value }}" $EXTRA
 
       - name: 基线对比
-        if: always()
+        if: steps.keycheck.outputs.skip == 'false'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}

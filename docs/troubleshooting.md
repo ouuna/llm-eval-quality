@@ -95,21 +95,15 @@ Unrecognized named-value: 'secrets'
 **GitHub 会让整个文件作废**，不是某个 job 失败——所以你看不到
 任何 job 的执行记录，只有一条文件级别的报错。
 
-本项目踩过的坑有两个，是**连续两次**：
+**同一根因连续发作三次**（run #4 #5 #6 #7 #8），每次修法看着都对但认知不完整：
 
-**坑 1**：job 级 `if` 里写了表达式包裹。正确写法是去掉：
+| # | 写法 | 为什么还错 |
+|---|---|---|
+| 坑 1 | `if: ${{ secrets.X != '' }}` | job 级 if 不能用表达式包裹 |
+| 坑 2 | 注释里写 `${{ secrets.X }}` | **GitHub 解析注释里的表达式**，与代码同等对待 |
+| 坑 3 | `if: secrets.X != ''` | **secrets 在 job 级 if 任何形态都不可用**，裸也不行 |
 
-```yaml
-# 错：整个 workflow 会作废
-if: ${{ secrets.OPENAI_API_KEY != '' }}
-
-# 对
-if: secrets.OPENAI_API_KEY != ''
-```
-
-**坑 2**：**注释里也不能出现表达式包裹**。
-为了说明「坑 1 不能这么写」而写的注释，本身含该表达式，
-再次触发完全相同的错误。GitHub 解析注释里的表达式与代码同等对待：
+坑 2 长这样：
 
 ```yaml
 # 这行注释会让 workflow 再次作废：
@@ -119,9 +113,34 @@ if: secrets.OPENAI_API_KEY != ''
 # 错误示例的形态是「美元符号 + 双大括号 + secrets.XXX」
 ```
 
-**这两个错误连续让 4 次 push 秒挂**（run #4#5 #6 #7），
-真实 API 评测那 4 次都没在 CI 上跑过。之所以没人发现，
-是因为本地 343 项Python 测试全绿——它们根本不解析 YAML。
+**坑 3 才是真相**：GitHub 在**解析文件阶段**就求值 job 级 `if`，
+那时 `secrets` 尚未注入。去掉包裹改成裸表达式没用——
+正确做法是把密钥判断移到 **step 级**（step 级 `if` 可用 `secrets`）：
+
+```yaml
+# 错：job 级完全不可用
+if: secrets.OPENAI_API_KEY != ''
+
+# 对：放在 step 级
+- name: 密钥检查
+  id: keycheck
+  env:
+    KEY: ${{ secrets.OPENAI_API_KEY }}
+  run: |
+    if [ -z "$KEY" ]; then
+      echo "::warning::未配置 secret，跳过真实 API 评测"
+      echo "skip=true" >> $GITHUB_OUTPUT
+      exit 0
+    fi
+    echo "skip=false" >> $GITHUB_OUTPUT
+
+- name: 执行质量评测
+  if: steps.keycheck.outputs.skip == 'false'
+```
+
+**为什么三次都没被发现**：本地 347 项 Python 测试全绿——它们根本不解析 YAML。
+而且错误藏在「整个文件作废」的表现形式下：`jobs` API 返回 `total_count: 0`，
+看不到任何 job 痕迹，失败只用 1 秒，容易被当成「还在排队」。
 
 **现在怎么防**：
 
@@ -129,12 +148,12 @@ if: secrets.OPENAI_API_KEY != ''
 python -m tests.check_workflow
 ```
 
-本地跑，1 秒内出结果。判据不是「YAML 能否解析」（上面两个错误在 YAML
-层面都是合法的），而是**表达式引用的上下文在该位置是否可用**：
+本地跑，1 秒内出结果。判据不是「YAML 能否解析」（这三个错误在 YAML
+层面**全都合法**），而是**表达式引用的上下文在该位置是否可用**：
 
 | 位置 | 可用上下文 |
 |---|---|
-| job 级 `if` | `github` / `needs` / `inputs` / `vars` |
+| job 级 `if` | `github` / `needs` / `inputs` / `vars`（**没有 secrets**） |
 | step 级 | 上述 + `secrets` / `steps` / `env` / `matrix` |
 | **注释** | **无**（但表达式仍会被解析） |
 
