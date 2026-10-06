@@ -1,0 +1,30 @@
+# LLM 质量评测系统 · 依赖清单
+#
+# 设计说明：
+# 核心逻辑（app/ + tests/）全部使用 Python 标准库实现
+# （json / urllib / re / csv / statistics），无运行时第三方依赖。
+#
+# 之所以不直接使用 openai SDK 或 PyYAML：
+#   1. 调用大模型 API 的本质是"拼 URL + 组装请求体 + 解析 JSON"，
+#      标准库 urllib 足以完成，测试工程师应理解底层协议而非只会调库；
+#   2. YAML 解析实现了面向固定结构的轻量子集，避免为读取配置引入依赖。
+#   （若环境已装 PyYAML，config_loader会自动优先使用）
+#
+# 环境要求：Python >= 3.9
+
+# ---- 运行时依赖 ----
+# 无（全部使用标准库）
+
+# ---- 开发/测试依赖 ----
+# 唯一必需项：pytest（质量门禁测试）
+pytest>=8.0.0
+
+# ---- 可选增强 ----
+# 以下非运行必需，按需启用：
+#
+# PyYAML>=6.0             # 更完整的 YAML 支持（config_loader 自动检测）
+# pytest-html>=4.0        # pytest 内置 HTML 报告
+# pytest-rerunfailures    # 不稳定用例自动重跑
+# pytest-xdist            # 并行执行
+# deepeval>=4.2.8         # LLM 评测框架（本项目以自研算法替代其核心指标）
+# openai>=1.0.0           # 官方 SDK（本项目未使用，保留作对比参考）

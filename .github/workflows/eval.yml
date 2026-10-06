@@ -1,0 +1,64 @@
+name: LLM Quality Gate
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # 每周一 09:00 (UTC) 定时回归
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+jobs:
+  evaluate:
+    name: LLM 质量评测
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install pytest pytest-html
+
+      - name: 配置模型 API
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::未配置 OPENAI_API_KEY secret"
+            exit 1
+          fi
+
+      - name: 执行质量评测
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
+        # 门禁不通过时退出码非 0，PR 会被标记为失败
+        run: |
+          python -m pytest tests/ -v --tb=short \
+            --html=reports/pytest_report.html \
+            --junitxml=reports/junit.xml
+
+      - name: 生成 JSON 与 HTML 报告
+        if: always()
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
+        run: python tests/evaluator.py || true
+
+      - name: 上传报告制品
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports
+          path: reports/
+          retention-days: 30
