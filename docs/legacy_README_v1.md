@@ -226,10 +226,14 @@ cp env.example .env   # 填入你的密钥
 ### 本地环境准备
 
 ```cmd
-setx OPENAI_API_KEY "你的 API Key"
-setx OPENAI_BASE_URL "https://open.bigmodel.cn/api/paas/v4"
-setx OPENAI_MODEL_NAME "glm-4-flash"
+copy env.example .env
 ```
+
+打开 `.env` 填入 `EVAL_API_KEY` / `EVAL_BASE_URL` / `EVAL_MODEL_NAME` 即可，
+配置只对本项目生效，不写入系统环境变量。
+
+> v1文档写的是 `setx OPENAI_*`。这些变量名仍被兼容，但推荐改用
+> `.env` + `EVAL_*`：见 `README.md` 的「API 配置」一节。
 
 > 环境变量仅对新开的命令行窗口生效。
 

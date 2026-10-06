@@ -39,26 +39,22 @@ EXIT_DATA_ERROR = 3
 EXIT_RUNTIME_ERROR = 4
 
 
+from eval import env_loader
+
+
 # ============================================================
 # 配置检查
 # ============================================================
 def check_config(require_api: bool = True) -> list:
     """
-    检查配置完整性
+    检查配置完整性，返回缺失项列表。
 
-    返回缺失项列表
+    只检查 API Key：base_url 与 model_name 有内置默认值，
+    缺失时框架会用默认值继续工作，不该把这种情况当成配置错误。
     """
     if not require_api:
         return []
-
-    missing = []
-    if not os.getenv("OPENAI_API_KEY"):
-        missing.append("OPENAI_API_KEY")
-    if not os.getenv("OPENAI_BASE_URL"):
-        missing.append("OPENAI_BASE_URL")
-    if not os.getenv("OPENAI_MODEL_NAME"):
-        missing.append("OPENAI_MODEL_NAME")
-    return missing
+    return [name for name, _ in env_loader.missing_required()]
 
 
 def print_config_error(missing: list):
@@ -66,22 +62,39 @@ def print_config_error(missing: list):
     print("=" * 66, file=sys.stderr)
     print("CONFIGURATION ERROR", file=sys.stderr)
     print("=" * 66, file=sys.stderr)
-    print(f"缺少环境变量：{', '.join(missing)}", file=sys.stderr)
+    print(f"缺少配置项：{', '.join(missing)}", file=sys.stderr)
     print("", file=sys.stderr)
-    print("Windows 配置方式：", file=sys.stderr)
-    for m in missing:
-        example = {
-            "OPENAI_API_KEY": "你的 API Key",
-            "OPENAI_BASE_URL": "https://open.bigmodel.cn/api/paas/v4",
-            "OPENAI_MODEL_NAME": "glm-4-flash",
-        }.get(m, "值")
-        print(f"  setx {m} \"{example}\"", file=sys.stderr)
+    print("推荐做法（只对本项目生效，不影响系统其他工具）：", file=sys.stderr)
+    print(f"  1. 复制 {os.path.join(PROJECT_ROOT, 'env.example')} 为 "
+          f"{env_loader.ENV_FILE}", file=sys.stderr)
+    print(f"  2. 打开该文件，填入 {', '.join(missing)}", file=sys.stderr)
     print("", file=sys.stderr)
-    print("注意：setx 只对新开的命令行窗口生效。", file=sys.stderr)
+    print("若你的电脑上还有别的工具也在用 OPENAI_* 这组变量名", file=sys.stderr)
+    print("（某些 API 切换类工具会写同名的系统环境变量），", file=sys.stderr)
+    print(f"用上面这种 .env 方式可以彻底避免互相覆盖。", file=sys.stderr)
     print("", file=sys.stderr)
     print("如需在无 API 环境下验证评测器本身，可加 --mock 参数：", file=sys.stderr)
     print("  python -m eval run --dataset smoke --mock", file=sys.stderr)
     print("=" * 66, file=sys.stderr)
+
+
+def cmd_config(args):
+    """查看当前生效的配置（密钥脱敏）"""
+    info = env_loader.describe()
+    print("=" * 66)
+    print("当前 API 配置")
+    print("=" * 66)
+    print(f"  配置文件      {info['env_file']}"
+          f"  {'（已存在）' if info['env_file_exists'] else '（不存在）'}")
+    print(f"  生效的变量名  {info['api_key_env']}")
+    print(f"  API Key       {info['api_key']}")
+    print(f"  接口地址      {info['base_url']}")
+    print(f"  模型名        {info['model_name']}")
+    print(f"  Judge 模型    {info['judge_model_name']}")
+    if info["missing"]:
+        print(f"  缺失项        {', '.join(info['missing'])}")
+    print("=" * 66)
+    return EXIT_OK if not info["missing"] else EXIT_CONFIG_ERROR
 
 
 # ============================================================
@@ -369,6 +382,10 @@ def build_parser():
     p_val = sub.add_parser("validate", help="验证数据集合法性")
     p_val.add_argument("--dataset", default="smoke", help="数据集名称")
     p_val.set_defaults(func=cmd_validate)
+
+    # config
+    p_cfg = sub.add_parser("config", help="查看当前生效的 API 配置（密钥脱敏）")
+    p_cfg.set_defaults(func=cmd_config)
 
     # run
     p_run = sub.add_parser("run", help="执行评测")

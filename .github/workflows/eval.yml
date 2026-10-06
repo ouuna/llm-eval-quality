@@ -157,6 +157,9 @@ jobs:
           fi
 
       - name: 配置校验
+        # CI 里继续使用 OPENAI_* 变量名（secrets 已按此配置，无需改动）。
+        # 这同时验证了向后兼容路径：本地推荐用 EVAL_* 隔离环境变量，
+        # 但程序读 OPENAI_* 依然有效。
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
@@ -168,6 +171,8 @@ jobs:
           fi
           echo "模型：$OPENAI_MODEL_NAME"
           echo "数据集：${{ steps.ds.outputs.value }}"
+          echo "---"
+          python -m eval config
 
       - name: 执行质量评测
         env:

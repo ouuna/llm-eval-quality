@@ -40,6 +40,8 @@ import time
 import urllib.request
 import urllib.error
 
+from eval import env_loader
+
 
 # ============================================================
 # 配置
@@ -48,8 +50,8 @@ DEFAULT_CONFIG = {
     # Provider 可选 openai_compatible（智谱/OpenAI/DeepSeek 通用）
     "provider": "openai_compatible",
     "model": "embedding-3",
-    "api_base": None,          # 留空则读 OPENAI_BASE_URL
-    "api_key_env": "OPENAI_API_KEY",
+    "api_base": None,          # 留空则读统一加载器（EVAL_BASE_URL / OPENAI_BASE_URL）
+    "api_key_env": "EVAL_API_KEY",
     "timeout": 30,
     "max_retry": 2,
     "batch_size": 16,          # 单次请求最多几条文本
@@ -95,11 +97,11 @@ class EmbeddingClient:
     def __init__(self, config: Dict[str, Any] = None, **overrides):
         self.cfg = {**DEFAULT_CONFIG, **(config or {}), **overrides}
 
-        # 配置化：从环境变量读取凭据，不硬编码
-        self.api_key = os.getenv(self.cfg["api_key_env"])
+        # 配置化：从统一加载器读取凭据，不硬编码
+        self.api_key_env = self.cfg["api_key_env"]
+        self.api_key = env_loader.get(self.api_key_env, "OPENAI_API_KEY")
         self.api_base = (self.cfg.get("api_base")
-                         or os.getenv("OPENAI_BASE_URL")
-                         or "https://open.bigmodel.cn/api/paas/v4")
+                         or env_loader.get_base_url())
 
         # 缓存：同一文本不重复计算
         self._cache: Dict[str, List[float]] = {}
@@ -110,10 +112,15 @@ class EmbeddingClient:
         return bool(self.api_key and self.api_base)
 
     def availability(self) -> Dict[str, Any]:
+        if self.is_available():
+            reason = ""
+        elif not self.api_key:
+            reason = f"未配置 API Key（{self.cfg['api_key_env']}，可用 python -m eval config 排查）"
+        else:
+            reason = "未配置接口地址（EVAL_BASE_URL）"
         return {
             "available": self.is_available(),
-            "reason": "" if self.is_available()
-                     else f"缺少环境变量 {self.cfg['api_key_env']} 或 api_base",
+            "reason": reason,
             "model": self.cfg["model"],
             "provider": self.cfg["provider"],
         }

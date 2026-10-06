@@ -40,6 +40,10 @@ GitHub 仓库 → Settings → Secrets and variables → Actions → New reposit
 - `OPENAI_BASE_URL`
 - `OPENAI_MODEL_NAME`
 
+> 本地开发推荐用项目根目录的 `.env`（`EVAL_API_KEY` 等）。
+> CI 继续用 `OPENAI_*` secrets，两者都被程序支持——CI 这样配置顺带
+> 验证了向后兼容路径。详见 `README.md` 的「API 配置」。
+
 **不要把密钥写在 workflow 文件里。** 本项目已使用 `${{ secrets.XXX }}` 方式引用。
 
 ---

@@ -14,15 +14,14 @@ Embedding 语义评测单元测试
 import os
 import pytest
 
+from eval import env_loader
 from eval.evaluators.semantic import (
     EmbeddingClient, SemanticEvaluator, EmbeddingUnavailable,
     cosine_similarity, compare_lexical_vs_semantic,
 )
 
 
-API_AVAILABLE = bool(
-    os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_BASE_URL")
-)
+API_AVAILABLE = bool(env_loader.get_api_key() and env_loader.get_base_url())
 needs_api = pytest.mark.skipif(
     not API_AVAILABLE, reason="未配置 API，语义测试跳过"
 )
@@ -59,41 +58,38 @@ class TestUnavailableDegradation:
     API 不可用时必须显式返回 unavailable，不能回退到词级假装有分数。
 
     这是需求第二十六条"不要伪造数据"的要求。
+    注意：这些用例必须用 no_api_config 同时屏蔽环境变量与 .env 文件，
+    只清环境变量的话，本地存在 .env 时会假通过。
     """
 
-    def test_availability_reports_reason(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    def test_availability_reports_reason(self, no_api_config):
         c = EmbeddingClient()
         assert not c.is_available()
         av = c.availability()
         assert av["available"] is False
-        assert "OPENAI_API_KEY" in av["reason"]
+        assert "EVAL_API_KEY" in av["reason"]
 
-    def test_similarity_returns_none_when_unavailable(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    def test_similarity_returns_none_when_unavailable(self, no_api_config):
         c = EmbeddingClient()
         r = c.similarity("问题", "答案")
         assert r["available"] is False
         assert r["score"] is None      # 关键：不是 0.0
         assert r["method"] == "embedding_unavailable"
 
-    def test_evaluator_降级_does_not_fabricate(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    def test_evaluator_降级_does_not_fabricate(self, no_api_config):
         e = SemanticEvaluator(EmbeddingClient())
         r = e.relevance("问题", "答案")
         assert r["available"] is False
         assert r["score"] is None
 
-    def test_fact_coverage_unavailable(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    def test_fact_coverage_unavailable(self, no_api_config):
         e = SemanticEvaluator(EmbeddingClient())
         r = e.fact_coverage("回答", ["事实一", "事实二"])
         assert r["available"] is False
         assert r["score"] is None
         assert "missing_facts" not in r     # 不能凭空说缺了什么
 
-    def test_embed_raises_when_unconfigured(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    def test_embed_raises_when_unconfigured(self, no_api_config):
         with pytest.raises(EmbeddingUnavailable):
             EmbeddingClient().embed(["x"])
 

@@ -31,9 +31,9 @@ python -m eval case --id smoke_in_01 --detect "错误回答"  # 看判定过程
 
 | 模块 | 规模 |
 |---|---|
-| 核心代码 `eval/` | 30 文件 7477 行 |
-| 测试 `tests/` | 18 文件 3778 行 |
-| 技术文档 `docs/` | 1286 行 |
+| 核心代码 `eval/` `app/` | 32 文件 8099 行 |
+| 测试 `tests/` | 20 文件 4183 行，325 项（离线 231 项） |
+| 技术文档 `docs/` | 6 份 1809 行 |
 | 数据集 | 73 条（8 + 19 + 16 + 30）|
 | 指标 | 12 项 |
 | 历史缺陷档案 | 16 条 |
@@ -181,6 +181,7 @@ tests/{unit,evaluators,regression}/
 
 | 命令 | 说明 |
 |---|---|
+| `python -m eval config` | 查看当前生效的 API 配置（密钥脱敏） |
 | `python -m eval list` | 列出可用数据集 |
 | `python -m eval validate --dataset full` | 验证数据集 |
 | `python -m eval run --dataset smoke` | 执行评测 |
@@ -244,15 +245,40 @@ tests/{unit,evaluators,regression}/
 
 ---
 
-## 环境变量
+## API 配置
+
+推荐用项目内配置文件，只对本项目生效：
 
 ```cmd
-setx OPENAI_API_KEY "你的key"
-setx OPENAI_BASE_URL "https://open.bigmodel.cn/api/paas/v4"
-setx OPENAI_MODEL_NAME "glm-4-flash"
+copy env.example .env
+```
 
-REM 可选：Judge 与 Embedding 独立配置（支持交叉验证）
-setx JUDGE_MODEL_NAME "glm-4-plus"
+打开 `.env`，填入 key 后保存即可，**不需要重开终端**。
+
+```
+EVAL_API_KEY=你的key
+EVAL_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+EVAL_MODEL_NAME=glm-4-flash
+```
+
+验证是否生效：
+
+```cmd
+python -m eval config
+```
+
+**为什么用 `EVAL_` 前缀而不是常见的 `OPENAI_`**：
+`OPENAI_API_KEY` 这组名字被所有兼容 OpenAI 协议的服务商沿用，
+本机上其他 AI 工具（某些 Provider 切换工具）也会往系统环境变量里写同名值。
+共用名字会导致互相覆写——你在那边切一次供应商，这边评测就连错服务了。
+本项目改用带 `EVAL_` 前缀的专属变量名，两边彻底隔离。
+
+程序仍然兼容 `OPENAI_*` 变量，所以 GitHub Actions 上的既有 secrets 无需改动。
+
+可选：用系统环境变量（不推荐，会与其他工具冲突）
+
+```cmd
+setx EVAL_API_KEY "你的key"
 ```
 
 > `setx` 只对新开的命令行窗口生效。

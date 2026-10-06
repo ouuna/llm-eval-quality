@@ -4,16 +4,80 @@
 
 ### 报 `CONFIGURATION ERROR：缺少环境变量`
 
-**原因**：`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL_NAME` 未配置。
+**原因**：`EVAL_API_KEY` 未配置（接口地址与模型名有默认值，不配置也能跑）。
 
-**Windows 配置**：
+**解决（推荐）**：用项目内配置文件，只对本项目生效：
+
 ```cmd
-setx OPENAI_API_KEY "你的key"
-setx OPENAI_BASE_URL "https://open.bigmodel.cn/api/paas/v4"
-setx OPENAI_MODEL_NAME "glm-4-flash"
+copy env.example .env
 ```
 
-> ⚠️ `setx` **只对新开的命令行窗口生效**。配置后必须重开终端。
+打开 `.env`，填入 `EVAL_API_KEY`，保存后直接重跑命令即可，不用重开终端。
+
+**验证配置是否生效**：
+```cmd
+python -m eval config
+```
+
+也可以用系统环境变量：
+```cmd
+setx EVAL_API_KEY "你的key"
+```
+
+> ⚠️ `setx` **只对新开的命令行窗口生效**。
+
+---
+
+### 电脑上还装了别的 AI 工具，本项目配置被它改掉了
+
+**现象**：本来跑得好好的，突然报连接错误，或者
+`python -m eval config` 显示的接口地址变成了别家的。
+
+**原因**：`OPENAI_API_KEY` / `OPENAI_BASE_URL` 这组变量名是OpenAI 最早定义的，
+后来被所有兼容 OpenAI 协议的服务商沿用。本机上其他工具
+（某些 AI CLI 的 Provider 切换工具）也会往**系统环境变量**里写同名的值，
+两边互相覆写。
+
+**解决**：改用项目专属变量名 + 项目内 `.env`，彻底隔离。
+
+```cmd
+copy env.example .env
+```
+
+在 `.env` 里配置 `EVAL_API_KEY` / `EVAL_BASE_URL` / `EVAL_MODEL_NAME`。
+这套变量名只有本项目在用，不与任何外部工具重叠。
+
+**确认隔离是否生效**：
+```cmd
+python -m eval config
+```
+
+- 「生效的变量名」显示 `EVAL_API_KEY` → 已隔离，外部工具改不动你的配置
+- 显示 `OPENAI_API_KEY` → 还在读系统环境变量，需要迁移
+
+**验证方法**：在 CC Switch 或同类工具里切换一次供应商，然后重跑上面的命令，
+显示的接口地址应该完全不变。
+
+---
+
+### 变量配了但读不到
+
+逐条排查：
+
+```cmd
+python -m eval config
+```
+
+| 输出里看到 | 说明 | 怎么办 |
+|---|---|---|
+| 配置文件后显示「不存在」 | 没有 `.env` 文件 | 执行 `copy env.example .env` |
+| 生效的变量名是 `OPENAI_API_KEY` | 读的是系统环境变量，不是 `.env` | 检查 `.env` 里的变量名有没有拼错 |
+| 缺失项非空 | 该变量在`.env` 和环境变量里都没有 | 确认这一行的 `=` 后面填了值，不是空着 |
+
+常见低级错误：
+- `.env` 保存成了 `env.txt` 或 `env.example.txt` → 不会被识别
+- 变量名写成 `EVAL_APIKEY`（少了下划线）→ 不会生效
+- `=` 号两边有空格 → 变量名会被带上尾随空格，识别不到
 
 ---
 

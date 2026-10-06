@@ -16,15 +16,20 @@ import urllib.request
 import urllib.error
 
 # ---------------------------
-# 1. 配置：从环境变量读取，避免密钥硬编码泄露
+# 1. 配置：优先读项目专属 EVAL_* 变量或 .env，避免与本机其他工具
+#    （如 Claude Code Provider 切换工具）争抢 OPENAI_* 同名变量
 # ---------------------------
-API_KEY = os.getenv("OPENAI_API_KEY")
-BASE_URL = os.getenv("OPENAI_BASE_URL")
-MODEL = os.getenv("OPENAI_MODEL_NAME")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+
+from eval import env_loader
+
+API_KEY = env_loader.get_api_key()
+BASE_URL = env_loader.get_base_url()
+MODEL = env_loader.get_model_name()
 TIMEOUT = 60
 MAX_RETRY = 3
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 
 # ---------------- 加载配置 ----------------
@@ -46,18 +51,18 @@ ENABLE_HALLUCINATION_GUARD = cfg_get(_CFG, "prompt.enable_hallucination_guard", 
 
 
 def _check_env():
-    """提前校验环境变量，让报错信息更明确"""
+    """提前校验 API 配置，让报错信息直接给出可复制的修复步骤"""
     missing = [n for n, v in {
-        "OPENAI_API_KEY": API_KEY,
-        "OPENAI_BASE_URL": BASE_URL,
-        "OPENAI_MODEL_NAME": MODEL,
+        env_loader.ENV_API_KEY: API_KEY,
+        env_loader.ENV_BASE_URL: BASE_URL,
+        env_loader.ENV_MODEL_NAME: MODEL,
     }.items() if not v]
 
     if missing:
         raise EnvironmentError(
-            f"缺少环境变量：{', '.join(missing)}\n"
-            f"请先执行：setx OPENAI_API_KEY \"你的key\"\n"
-            f"注意：setx 只对新开的命令行窗口生效。"
+            f"缺少 API 配置：{', '.join(missing)}\n"
+            f"推荐做法：复制 env.example 为 {env_loader.ENV_FILE}，填入上面的变量\n"
+            f"（只对本项目生效，不会影响系统里其他工具的同名配置）"
         )
 
 

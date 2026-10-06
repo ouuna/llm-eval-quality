@@ -52,6 +52,7 @@ GitHub Actions (阻断质量回归)
 
 ```
 eval/
+├── env_loader.py            配置加载（.env + EVAL_* 隔离 + 脱敏自检）
 ├── schemas/
 │   ├── dataset.py          Dataset / EvalCase / GroundTruth
 │   └── result.py           CaseResult / EvalReport / TokenUsage
@@ -88,8 +89,12 @@ tests/
 ├── unit/                   Schema 单元测试
 ├── evaluators/             各 Evaluator 单元测试
 ├── regression/             缺陷回归测试
+├── test_env_loader.py      配置优先级与隔离回归
 └── test_quality_gate.py    旧门禁（保留兼容）
 ```
+
+项目根目录的 `env.example` 是配置模板，复制为 `.env` 后填入真实值。
+`.env` 已被 `.gitignore` 排除。
 
 ## 关键设计决策
 
@@ -146,6 +151,34 @@ Bug 发现 → 复现 → 固化用例 → 修复 → 回归测试 → CI 保护
 ```
 
 16 条历史缺陷全部记录了 `discovered_in` / `root_cause` / `fix_summary`，并按 `layer` 分类（evaluator_bug / method_limit / env_issue）指明应由哪个指标验证。
+
+### 6. 配置隔离：项目变量名 vs 通用变量名
+
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` 这组名字由 OpenAI 最早定义，
+后来被所有兼容 OpenAI 协议的服务商沿用。本机上其他 AI 工具
+（某些 CLI 的 Provider 切换器）也会往**系统环境变量**里写同名值，
+共用名字必然互相覆写：你切一次供应商，评测就连错服务。
+
+`eval/env_loader.py` 解决这一点：
+
+| 手段 | 说明 |
+|---|---|
+| 项目专属变量名 | `EVAL_API_KEY` / `EVAL_BASE_URL` / `EVAL_MODEL_NAME`，与外部工具零重叠 |
+| 项目内 `.env` | 配置只对本项目生效，不写入系统，无需重开终端 |
+| 统一入口 | 所有模块都走 `env_loader`，不再各自 `os.getenv` |
+| 自检命令 | `python -m eval config` 显示实际生效的变量名（密钥脱敏） |
+
+取值优先级刻意把「`.env` 里的项目名」排在「环境变量里的通用名」之前：
+
+```
+进程环境变量 EVAL_*  >  .env 中 EVAL_*  >  进程环境变量 OPENAI_*  >  .env 中 OPENAI_*
+```
+
+如果反过来排，外部工具改一次系统环境变量就能污染本项目，变量改名等于白改。
+这条顺序由 `tests/test_env_loader.py::TestPriority` 中的回归用例锁定。
+
+向后兼容 `OPENAI_*` 是有意的：GitHub Actions 上已配置的 secrets
+无需改动即可继续工作，CI 因此也在持续验证这条兼容路径。
 
 ## 已知局限
 

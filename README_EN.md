@@ -113,9 +113,9 @@ Bug 发现 → 复现 → 固化用例 → 修复 → 回归测试 → CI 保护
 
 | 模块 | 规模 |
 |---|---|
-| 核心代码 | 30 文件 7477 行 |
-| 测试 | 18 文件 3778 行，278 项测试 |
-| 技术文档 | 5 份，1286 行 |
+| 核心代码 | 32 文件 8099 行 |
+| 测试 | 20 文件 4183 行，325 项（离线 231 项）|
+| 技术文档 | 6 份，1809 行 |
 | 评测数据集 | 73 条（4 个层级）|
 | 质量指标 | 12 项 |
 | 历史缺陷档案 | 16 条 |
@@ -128,13 +128,40 @@ Bug 发现 → 复现 → 固化用例 → 修复 → 回归测试 → CI 保护
 
 ### 环境准备
 
+推荐使用项目内的 `.env` 配置文件，只对本项目生效：
+
 ```cmd
-setx OPENAI_API_KEY "你的key"
-setx OPENAI_BASE_URL "https://open.bigmodel.cn/api/paas/v4"
-setx OPENAI_MODEL_NAME "glm-4-flash"
+copy env.example .env
 ```
 
-> `setx` 仅对新开的命令行窗口生效。
+填入 key 后保存即可，**无需重开终端**。
+
+```
+EVAL_API_KEY=your-key
+EVAL_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+EVAL_MODEL_NAME=glm-4-flash
+```
+
+验证是否生效：
+
+```cmd
+python -m eval config
+```
+
+**Why the `EVAL_` prefix instead of the usual `OPENAI_`**:
+`OPENAI_API_KEY` and friends were defined by OpenAI and are reused by every
+OpenAI-compatible provider, so other AI tools on the same machine (provider
+switchers, CLI wrappers) also write to these system environment variables.
+Sharing one name means they overwrite each other — switch providers in one
+tool and the evaluation silently talks to the wrong endpoint. This project uses
+its own `EVAL_`-prefixed names, which removes the collision entirely.
+
+The legacy `OPENAI_*` names still work, so existing GitHub Actions secrets
+need no changes.
+
+> Using `setx` with system environment variables also works, but is not
+> recommended for the reason above. Note `setx` only affects newly opened
+> terminals.
 
 ### 运行
 
@@ -177,6 +204,7 @@ python -m pytest tests/ \
 
 | 命令 | 说明 |
 |---|---|
+| `python -m eval config` | 查看当前生效的 API 配置（密钥脱敏） |
 | `python -m eval list` | 列出可用数据集 |
 | `python -m eval validate --dataset full` | 验证数据集合法性 |
 | `python -m eval run --dataset smoke` | 执行评测 |

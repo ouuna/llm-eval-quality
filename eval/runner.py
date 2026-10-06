@@ -28,6 +28,7 @@ from eval.evaluators.correctness import (
 from eval.quality_gate.gate import QualityGate, load_gate_config
 from eval.reporting.html_report import save_html
 from eval.reporting.csv_report import save_csv
+from eval import env_loader
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -315,7 +316,7 @@ def run_evaluation(dataset: Dataset,
     report = EvalReport(
         dataset_name=dataset.name,
         dataset_tier=dataset.tier,
-        model=("mock" if use_mock else os.getenv("OPENAI_MODEL_NAME", "unknown")),
+        model=("mock" if use_mock else env_loader.get_model_name("unknown")),
         provider=(provider.name if hasattr(provider, "name") else "unknown"),
         started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         duration_sec=round(time.time() - started, 1),

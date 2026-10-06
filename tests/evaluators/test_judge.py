@@ -18,6 +18,7 @@ import os
 import json
 import pytest
 
+from eval import env_loader
 from eval.evaluators.judge import (
     JudgeClient, JudgeResult, extract_json, validate_judge_schema,
     normalize_scores, check_judge_consistency, check_position_bias,
@@ -25,9 +26,7 @@ from eval.evaluators.judge import (
 )
 
 
-API_AVAILABLE = bool(
-    os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_BASE_URL")
-)
+API_AVAILABLE = bool(env_loader.get_api_key() and env_loader.get_base_url())
 needs_api = pytest.mark.skipif(not API_AVAILABLE, reason="未配置 API")
 
 
@@ -131,30 +130,31 @@ class TestNormalize:
 
 
 class TestNotConfigured:
-    """未配置时必须显式失败，绝不静默通过"""
+    """未配置时必须显式失败，绝不静默通过
 
-    def test_missing_key_reports_reason(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    注意：必须用 no_api_config 同时屏蔽环境变量与 .env 文件，
+    只清环境变量的话，本地存在 .env 时这些用例会假通过。
+    """
+
+    def test_missing_key_reports_reason(self, no_api_config):
         c = JudgeClient()
         assert not c.is_available()
-        assert "OPENAI_API_KEY" in c.availability()["reason"]
+        assert "EVAL_API_KEY" in c.availability()["reason"]
 
-    def test_missing_model_reports_reason(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.delenv("OPENAI_MODEL_NAME", raising=False)
-        monkeypatch.delenv("JUDGE_MODEL_NAME", raising=False)
+    def test_missing_model_reports_reason(self, no_api_config, monkeypatch):
+        #只配了key，模型名全部缺失
+        monkeypatch.setenv("EVAL_API_KEY", "sk-test")
         c = JudgeClient()
         assert not c.is_available()
         assert "Judge 模型" in c.availability()["reason"]
 
-    def test_judge_returns_unavailable_not_pass(self, monkeypatch):
+    def test_judge_returns_unavailable_not_pass(self, no_api_config):
         """
         核心回归：未配置时返回 unavailable，error_kind 明确
 
         绝不能返回一个"通过"的结果——那是需求第六条明令禁止的
         "把 evaluator API 失败当成测试通过"。
         """
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         c = JudgeClient()
         r = c.judge("问题", "答案", "上下文")
         assert r.available is False

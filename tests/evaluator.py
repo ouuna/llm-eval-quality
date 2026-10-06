@@ -67,14 +67,14 @@ REFUSAL_MARKERS = ["未提及", "没有相关", "无法回答", "不知道", "�
 # 工具函数
 # ============================================================
 def check_env():
-    """校验环境变量"""
+    """校验 API 配置（v1 兼容入口，现统一走 eval.env_loader）"""
+    from eval import env_loader
     missing = [n for n in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL_NAME")
-               if not os.getenv(n)]
+               if not env_loader.get(n)]
     if missing:
         raise EnvironmentError(
-            f"缺少环境变量：{', '.join(missing)}\n"
-            f"请先执行：setx OPENAI_API_KEY \"你的key\"\n"
-            f"注意：setx 只对新开的命令行窗口生效。"
+            f"缺少配置：{', '.join(missing)}\n"
+            f"推荐做法：复制 env.example 为 .env，填入 EVAL_API_KEY 等变量"
         )
 
 

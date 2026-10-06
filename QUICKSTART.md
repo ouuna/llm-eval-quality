@@ -102,13 +102,14 @@ start reports\report.html
 python -m pytest tests/ --ignore=tests/evaluators/test_semantic.py --ignore=tests/evaluators/test_judge.py --ignore=tests/test_quality_gate.py -q
 ```
 
-**应该看到 180+ 项通过**，其中：
+**应该看到 230 项左右通过**，其中：
 ```
-184 passed, 1 skipped, 9 xfailed in 5.26s
+231 passed, 1 skipped, 9 xfailed in 7.97s
 ```
 
-> 完整测试（含需API 的语义与 Judge 评测）是 278 项。
-> 离线子集不含这三个文件，所以是 184 项。
+> 完整测试（含需 API 的语义与 Judge 评测）是 325 项。
+> 离线子集不含 `test_semantic.py` / `test_judge.py` / `test_quality_gate.py`
+> 这三个文件，所以是 231 项。
 
 > `xfailed` 是正常的 —— 那是明确标记「这 9 条不由声明级验证覆盖」，不做虚假覆盖。
 
@@ -141,21 +142,60 @@ python -m eval.datasets.regression
 
 ## 第 9 步（需要 API key）：真实评测
 
-### 配置环境变量
+### 方式A：项目内配置文件（推荐）
+
+在项目根目录执行：
 
 ```cmd
-setx OPENAI_API_KEY "你的key"
-setx OPENAI_BASE_URL "https://open.bigmodel.cn/api/paas/v4"
-setx OPENAI_MODEL_NAME "glm-4-flash"
+copy env.example .env
 ```
 
-> **必须重开命令行窗口**，`setx` 只对新窗口生效。
+然后用记事本打开 `.env`，把 `EVAL_API_KEY=` 后面填上你的 key，保存。
+
+**为什么推荐这种方式**：`.env` 只对本项目生效，不会污染系统环境变量。
+如果你电脑上还装了别的 AI 工具（某些 Provider 切换类工具也在用
+`OPENAI_API_KEY` 这组名字），用系统环境变量就会互相覆盖 ——
+你在那边切一次供应商，这边跑评测就会连错服务。
+
+`.env` 已在 `.gitignore` 里，不会被提交到仓库，密钥不会泄露。
+
+### 方式 B：系统环境变量
+
+```cmd
+setx EVAL_API_KEY "你的key"
+setx EVAL_BASE_URL "https://open.bigmodel.cn/api/paas/v4"
+setx EVAL_MODEL_NAME "glm-4-flash"
+```
+
+> `setx` 只对新开的命令行窗口生效，改完要重开窗口。
+
+> 如果你之前已经用 `setx OPENAI_API_KEY` 配过了，程序依然能读到，
+> 但建议改成 `EVAL_*`，理由见上面方式 A 的说明。
 
 ### 验证配置
 
 ```cmd
-python -c "import os; print('Key已配置:', os.getenv('OPENAI_API_KEY') is not None)"
+python -m eval config
 ```
+
+会输出当前生效的配置（密钥脱敏显示）：
+
+```
+==================================================================
+当前 API 配置
+==================================================================
+  配置文件      D:\llm_eval_project\.env  （已存在）
+  生效的变量名  EVAL_API_KEY
+  API Key       4573********r4
+  接口地址      https://open.bigmodel.cn/api/paas/v4
+  模型名        glm-4-flash
+  Judge 模型    glm-4-flash
+==================================================================
+```
+
+重点看「生效的变量名」那一行：
+- 显示 `EVAL_API_KEY` → 走的是项目配置文件，与外部工具互不干扰
+- 显示 `OPENAI_API_KEY` → 仍在读系统环境变量，建议迁移到 `.env`
 
 ### 执行
 

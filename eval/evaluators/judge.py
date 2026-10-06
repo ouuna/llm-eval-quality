@@ -44,14 +44,16 @@ import re
 import urllib.request
 import urllib.error
 
+from eval import env_loader
+
 
 # ============================================================
 # 配置
 # ============================================================
 DEFAULT_JUDGE_CONFIG = {
     "provider": "openai_compatible",
-    "model": None,                 # 留空则读 JUDGE_MODEL_NAME，再退回 OPENAI_MODEL_NAME
-    "api_key_env": "OPENAI_API_KEY",
+    "model": None,                 # 留空则读 EVAL_JUDGE_MODEL_NAME，再退回 EVAL_MODEL_NAME
+    "api_key_env": "EVAL_API_KEY",
     "api_base": None,
     "timeout": 45,
     "max_retry": 3,                # JSON 非法时的重试次数
@@ -267,12 +269,11 @@ class JudgeClient:
     def __init__(self, config: Dict[str, Any] = None, **overrides):
         self.cfg = {**DEFAULT_JUDGE_CONFIG, **(config or {}), **overrides}
 
-        env_model = (os.getenv("JUDGE_MODEL_NAME")
-                     or os.getenv("OPENAI_MODEL_NAME"))
-        self.model = self.cfg.get("model") or env_model
-        self.api_key = os.getenv(self.cfg["api_key_env"])
+        self.model = self.cfg.get("model") or env_loader.get_judge_model_name()
+        self.api_key_env = self.cfg["api_key_env"]
+        self.api_key = env_loader.get(self.api_key_env, "OPENAI_API_KEY")
         self.api_base = (self.cfg.get("api_base")
-                         or os.getenv("OPENAI_BASE_URL"))
+                         or env_loader.get_base_url())
 
         # 记录统计，用于报告
         self.stats = {"calls": 0, "failures": 0, "retries": 0}
@@ -283,12 +284,13 @@ class JudgeClient:
     def availability(self) -> Dict[str, Any]:
         if not self.api_key:
             return {"available": False,
-                    "reason": f"缺少环境变量 {self.cfg['api_key_env']}"}
+                    "reason": f"未配置 API Key（{self.api_key_env}，"
+                               f"可用 python -m eval config 排查）"}
         if not self.model:
             return {"available": False,
-                    "reason": "未配置 Judge 模型（ JUDGE_MODEL_NAME 或 OPENAI_MODEL_NAME）"}
+                    "reason": "未配置 Judge 模型（EVAL_JUDGE_MODEL_NAME 或 EVAL_MODEL_NAME）"}
         if not self.api_base:
-            return {"available": False, "reason": "未配置 API Base"}
+            return {"available": False, "reason": "未配置接口地址（EVAL_BASE_URL）"}
         return {"available": True, "reason": "", "model": self.model}
 
     # ---------- 核心调用 ----------
