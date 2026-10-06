@@ -281,3 +281,22 @@ python -m pytest tests/ \
 3. **失败必须可诊断** —— 门禁失败要说清哪、差多少、怎么修
 4. **解耦** —— 换 SUT 不改评测框架；换业务不改代码
 5. **诚实记录局限** —— 已知问题写进文档，不藏
+
+---
+
+## 快速验证
+
+刚clone 下来想先确认能跑？看 [`QUICKSTART.md`](QUICKSTART.md)，5 分钟完成验证。
+
+**最快的确认方式**（无需 API key）：
+```bash
+python -m eval run --dataset smoke --mock
+```
+
+[English README](./README_EN.md) | [快速验证](./QUICKSTART.md)
+
+---
+
+## License
+
+MIT
