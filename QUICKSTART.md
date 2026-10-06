@@ -102,14 +102,14 @@ start reports\report.html
 python -m pytest tests/ --ignore=tests/evaluators/test_semantic.py --ignore=tests/evaluators/test_judge.py --ignore=tests/test_quality_gate.py -q
 ```
 
-**应该看到 240 项左右通过**，其中：
+**应该看到 250 项左右通过**，其中：
 ```
-244 passed, 1 skipped, 9 xfailed in 7.38s
+249 passed, 1 skipped, 9 xfailed in 9.04s
 ```
 
-> 完整测试（含需 API 的语义与Judge 评测）是 338 项。
+> 完整测试（含需 API 的语义与 Judge 评测）是 343 项。
 > 离线子集不含 `test_semantic.py` / `test_judge.py` / `test_quality_gate.py`
-> 这三个文件，所以是 244 项。
+> 这三个文件，所以是 249 项。
 
 > `xfailed` 是正常的 —— 那是明确标记「这 9 条不由声明级验证覆盖」，不做虚假覆盖。
 

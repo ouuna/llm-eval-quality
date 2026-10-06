@@ -51,7 +51,8 @@ jobs:
   #
   # 为什么放在最前面：workflow 语法错误会让整个文件作废，
   # 表现为 CI 1 秒内直接Failure，连哪个 job 挂了都看不出来。
-  # Phase 13 的 `if: ${{ secrets... }}` 就是这样连续让 3 次 push 秒挂。
+  # Phase 13 的 job 级 if 误用了表达式包裹（secrets 前带美元双括号），
+  # 就是这样连续让 3 次 push 秒挂。
   # 这个 job 失败说明「配置文件本身有问题」，后面的 job 根本不会跑，
   # 所以它必须最先跑，且不依赖其他 job。
   # ==========================================================
@@ -157,8 +158,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [ unit-tests, offline-eval ]
     # 无密钥时明确跳过，而非假装成功
-    # 注意：job 级 if 中不能写 ${{ }}，GitHub 解析器会报
-    # "Unrecognized named-value: 'secrets'"，导致整个 workflow 文件作废
+    # 注意：job 级 if 中不能写表达式包裹（美元双括号），
+    # GitHub 解析器会报 "Unrecognized named-value: 'secrets'"，
+    # 导致整个 workflow 文件作废。
+    # 注意：注释里也不能出现该包裹形式——GitHub 同样会解析注释里的表达式。
     if: secrets.OPENAI_API_KEY != ''
 
     steps:

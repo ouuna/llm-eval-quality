@@ -93,6 +93,30 @@ def check_workflow(path=WORKFLOW_PATH):
                     f"如 if: {var}.XXX != ''"))
                 break
 
+    # --- 坑 1b：注释中出现 ${{ secrets... }} ---
+    #
+    # 这是本项目真实踩过的坑，且极具讽刺性：
+    # 为了说明「job 级 if 不能用 ${{ secrets }}」而写的注释，
+    # 本身含有 ${{ secrets... }}，再次触发同一个错误，
+    # workflow 继续作废。
+    #
+    # GitHub 的表达式解析器不区分注释与代码，
+    # 注释里的 ${{ }} 同样会被求值。
+    for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        if "${{" not in stripped:
+            continue
+        for token in JOB_LEVEL_FORBIDDEN:
+            if token in stripped:
+                issues.append(Issue(
+                    i,
+                    f"注释中出现 ${{{{ {token}... }}}}——GitHub 仍会解析注释里的表达式，"
+                    f"会触发与代码中相同的错误。请改写注释，"
+                    f"例如把大括号拆开或用文字描述"))
+                break
+
     # --- 坑 2：tab 缩进（YAML 完全不接受） ---
     for i, line in enumerate(lines, 1):
         if line.startswith("\t"):
@@ -149,6 +173,111 @@ def check_workflow(path=WORKFLOW_PATH):
         issues.append(Issue(
             0, f"${{{{ 与 }}}} 数量不匹配（{text.count('${{')} vs "
                 f"{text.count('}}}')}），表达式未闭合"))
+
+    # --- 坑 7：表达式的上下文与所在位置不匹配 ---
+    #
+    # 这才是 GitHub 报错的真正判据：表达式里出现的上下文对象，
+    # 必须在该位置可用。
+    #
+    #   job 级 if     只能用 github.* / needs.* / inputs.*
+    #   step 级 env   可以用 secrets.*
+    #   注释          全部不可用（但仍会被解析！）
+    #
+    # 只检查 job 级 if 不够——本项目就栽在注释里：
+    # 为了说明错误写法而写的注释，本身含 secrets 上下文，
+    # 再次触发同一个错误。
+    issues.extend(_check_expression_contexts(lines))
+
+    return issues
+
+
+# 各位置可用的表达式上下文
+_ALLOWED_CONTEXTS = {
+    "job_if": ("github", "needs", "inputs", "vars", "hashFiles"),
+    "step": ("github", "steps", "inputs", "env", "secrets",
+             "needs", "strategy", "matrix", "job", "runner", "hashFiles"),
+    "concurrency": ("github", "inputs", "vars"),
+}
+
+# 所有合法的上下文前缀
+_VALID_PREFIXES = ("github", "secrets", "steps", "inputs", "env",
+                   "needs", "strategy", "matrix", "job", "runner",
+                   "vars", "hashFiles")
+
+
+def _extract_contexts(expr):
+    """
+    从表达式文本里取出所有上下文引用，如 'secrets.XXX' 里的 'secrets'。
+    """
+    found = set()
+    for token in re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.", expr):
+        if token in _VALID_PREFIXES:
+            found.add(token)
+    return found
+
+
+def _iter_expressions(text):
+    """
+    遍历所有 ${{ ... }} 表达式。
+
+    产出 (行号, 所在行文本, 是否注释, 表达式内容)。
+    """
+    for i, line in enumerate(text.splitlines(), 1):
+        for match in re.finditer(r"\$\{\{(.*?)\}\}", line):
+            yield i, line, line.strip().startswith("#"), match.group(1)
+
+
+def _check_expression_contexts(lines):
+    issues = []
+    seen = set()
+
+    for line_no, line, is_comment, expr in _iter_expressions("\n".join(lines)):
+        contexts = _extract_contexts(expr)
+        if not contexts:
+            continue
+
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+
+        if is_comment:
+            # 注释：任何上下文都非法（GitHub 仍会解析）
+            bad = sorted(contexts)
+            key = (line_no, "comment", tuple(bad))
+            if key not in seen:
+                seen.add(key)
+                issues.append(Issue(
+                    line_no,
+                    f"注释中出现引用 {'/'.join(bad)} 的表达式——"
+                    f"GitHub 会解析注释里的表达式并按代码处理，"
+                    f"注释中不允许引用任何上下文。"
+                    f"请用文字描述，不要写出表达式形态"))
+            continue
+
+        # job 级 if：缩进 4 空格、以 if: 开头
+        if stripped.startswith("if:") and indent == 4:
+            allowed = _ALLOWED_CONTEXTS["job_if"]
+            bad = sorted(contexts - set(allowed))
+            if bad:
+                key = (line_no, "job_if", tuple(bad))
+                if key not in seen:
+                    seen.add(key)
+                    issues.append(Issue(
+                        line_no,
+                        f"job 级 if 中引用了 {'/'.join(bad)}，"
+                        f"该位置只允许 {'/'.join(allowed)}。"
+                        f"job 级 if 不需要表达式包裹，"
+                        f"直接写裸表达式即可"))
+            continue
+
+        # 其他位置：step 级等，允许 secrets
+        allowed = _ALLOWED_CONTEXTS["step"]
+        bad = sorted(contexts - set(allowed))
+        if bad:
+            key = (line_no, "step", tuple(bad))
+            if key not in seen:
+                seen.add(key)
+                issues.append(Issue(
+                    line_no, f"此处引用了 {'/'.join(bad)}，该位置不可用"))
 
     return issues
 

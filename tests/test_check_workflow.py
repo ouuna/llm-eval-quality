@@ -115,6 +115,74 @@ class TestDetectsErrors:
         assert "secrets" in msg
         assert "secrets!=" not in msg, f"提示里的正确写法被截断了：{msg}"
 
+    def test_抓出注释中的secrets表达式(self, tmp_path, real_workflow_text):
+        """
+        真实踩过的坑（第二次）：为了说明「注释里也别写表达式」而写的注释，
+        本身含有 secrets 引用，再次把 workflow 弄挂。
+
+        GitHub 解析注释里的表达式，与代码同等对待。
+        """
+        broken = real_workflow_text.replace(
+            "# 注意：注释里也不能出现该包裹形式",
+            "# 错误示例：${{ secrets.OPENAI_API_KEY }}")
+        issues = check_workflow(_write(tmp_path, broken))
+
+        assert issues, "!!! 没抓到注释里的表达式问题"
+        assert any("注释" in str(i) for i in issues)
+
+    def test_抓出注释中的steps表达式(self, tmp_path, real_workflow_text):
+        """注释里引用 steps 同样非法"""
+        broken = real_workflow_text.replace(
+            "# 注意：注释里也不能出现该包裹形式",
+            "# 详见 ${{ steps.ds.outputs.value }}")
+        issues = check_workflow(_write(tmp_path, broken))
+        assert any("注释" in str(i) for i in issues)
+
+    def test_step级env用secrets是合法的(self, real_workflow_text):
+        """
+        防误报：step 级 env 里用 secrets 完全合法，不能报错。
+
+        一个见什么都报的检查器等于没检查器。
+        """
+        assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in real_workflow_text
+        assert check_workflow(WORKFLOW_PATH) == []
+
+    def test_concurrency用github是合法的(self, real_workflow_text):
+        assert "eval-${{ github.ref }}" in real_workflow_text
+        assert check_workflow(WORKFLOW_PATH) == []
+
+    def test_所有secrets引用都在合法位置(self, real_workflow_text):
+        """
+        逐行确认 secrets 只出现在两种合法位置：
+          1. job 级 if 的裸表达式（缩进 4）
+          2. step 级 env 块（缩进 >= 8）
+        绝不能出现在注释里，也不能被 ${{ }} 包裹。
+        """
+        seen_any = False
+
+        for i, line in enumerate(real_workflow_text.splitlines(), 1):
+            if "secrets." not in line:
+                continue
+            seen_any = True
+            stripped = line.strip()
+            indent = len(line) - len(line.lstrip())
+
+            assert not stripped.startswith("#"), (
+                f"第 {i} 行注释里出现 secrets 引用：{stripped}")
+
+            is_job_level_if = stripped.startswith("if:") and indent == 4
+            is_step_level = indent >= 8
+
+            assert is_job_level_if or is_step_level, (
+                f"第 {i} 行 secrets 引用位置不合法（缩进 {indent}）：{stripped}")
+
+            # 合法位置都不该带表达式包裹
+            if is_job_level_if:
+                assert "${{" not in stripped, (
+                    f"第 {i} 行 job 级 if 不能用表达式包裹：{stripped}")
+
+        assert seen_any, "测试前提失效：文件里已经没有 secrets 引用了"
+
     def test_抓出tab缩进(self, tmp_path, real_workflow_text):
         broken = real_workflow_text.replace(
             "    runs-on: ubuntu-latest", "\t\truns-on: ubuntu-latest", 1)
