@@ -7,100 +7,217 @@
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
-  background:#f7f7f8; color:#1f2328; padding:24px; line-height:1.6; }
-.wrap { max-width:1200px; margin:0 auto; }
-h1 { font-size:24px; font-weight:600; margin-bottom:6px; }
-.meta { color:#656d76; font-size:13px; margin-bottom:20px; }
-.meta span { margin-right:18px; }
-.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
-  gap:12px; margin-bottom:24px; }
-.card { background:#fff; border:1px solid #d8dbdf; border-radius:8px; padding:16px; }
-.card .label { font-size:12px; color:#656d76; margin-bottom:6px; }
-.card .value { font-size:28px; font-weight:600; color:#1f6feb; }
-.card .hint { font-size:11px; color:#8b949e; margin-top:4px; }
-h2 { font-size:16px; font-weight:600; margin:24px 0 10px; }
+  background:#f6f7f9; color:#1f2328; padding:24px; line-height:1.6; }
+.wrap { max-width:1280px; margin:0 auto; }
+h1 { font-size:24px; font-weight:600; margin-bottom:4px; }
+h2 { font-size:16px; font-weight:600; margin:28px 0 10px;
+  padding-bottom:8px; border-bottom:1px solid #d8dbdf; }
+.sub { color:#656d76; font-size:13px; margin-bottom:20px; }
+.sub span { margin-right:16px; }
+
+/* 门禁横幅 */
+.banner { padding:14px 18px; border-radius:8px; margin-bottom:24px;
+  font-size:14px; font-weight:500; }
+.banner.pass { background:#dafbe1; color:#1a7f37; border:1px solid #4ac26b; }
+.banner.fail { background:#ffebe9; color:#cf222e; border:1px solid #ff8182; }
+
+/* 指标卡 */
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:12px; margin-bottom:8px; }
+.card { background:#fff; border:1px solid #d8dbdf; border-radius:8px;
+  padding:14px 16px; }
+.card .label { font-size:12px; color:#656d76; margin-bottom:4px; }
+.card .value { font-size:26px; font-weight:600; }
+.card .hint { font-size:11px; color:#8b949e; margin-top:3px; }
+.card.ok .value { color:#1a7f37; }
+.card.bad .value { color:#cf222e; }
+.card.na .value { color:#8b949e; font-size:18px; }
+
+/* 表格 */
 table { width:100%; border-collapse:collapse; background:#fff;
   border:1px solid #d8dbdf; border-radius:8px; overflow:hidden;
-  font-size:13px; }
+  font-size:13px; margin-bottom:8px; }
 th { background:#f6f8fa; padding:9px 10px; text-align:left;
   font-weight:600; border-bottom:1px solid #d8dbdf; white-space:nowrap; }
 td { padding:8px 10px; border-bottom:1px solid #eef0f2; vertical-align:top; }
 tr:last-child td { border-bottom:none; }
-tr.fail { background:#fff8f8; }
+tr.row-fail { background:#fff8f8; }
+tr.row-error { background:#fff4e5; }
 .mono { font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
-  font-size:12px; color:#656d76; }
-.badge { display:inline-block; padding:2px 7px; border-radius:10px;
+  font-size:12px; color:#656d76; white-space:nowrap; }
+
+/* 徽章 */
+.badge { display:inline-block; padding:2px 8px; border-radius:10px;
   font-size:11px; font-weight:600; }
 .badge.pass { background:#dafbe1; color:#1a7f37; }
 .badge.fail { background:#ffebe9; color:#cf222e; }
-.reason { color:#656d76; font-size:12px; max-width:260px; }
+.badge.error { background:#fff1e5; color:#bc4c00; }
+
+/* 违反标签 */
+.vt { display:inline-block; padding:1px 6px; border-radius:4px;
+  font-size:11px; margin:1px 2px; background:#ffebe9; color:#cf222e; }
+
+/* 详情块 */
+.detail { background:#fff; border:1px solid #d8dbdf; border-radius:8px;
+  padding:12px 14px; margin-bottom:8px; }
+.detail .q { font-weight:500; margin-bottom:6px; }
+.detail .ans { background:#f6f8fa; border-radius:6px; padding:8px 10px;
+  margin:4px 0; font-size:12.5px; white-space:pre-wrap; }
+.detail .meta { color:#656d76; font-size:12px; }
+
+/* 基线对比 */
+.delta { font-size:12px; font-weight:500; }
+.delta.up { color:#cf222e; }
+.delta.down { color:#1a7f37; }
+.delta.flat { color:#8b949e; }
 .note { background:#fff8c5; border:1px solid #d4a72c; border-radius:8px;
-  padding:12px 14px; font-size:12.5px; margin-bottom:20px; color:#633c01; }
+  padding:10px 12px; font-size:12.5px; margin-bottom:16px; color:#633c01; }
+.pareto { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+.pareto .bar { height:16px; background:#ff8182; border-radius:3px; }
+.pareto .label { font-size:12px; min-width:200px; }
+.pareto .num { font-size:12px; color:#656d76; }
 </style>
 </head>
 <body>
 <div class="wrap">
 <h1>LLM 质量评测报告</h1>
-<div class="meta">
-  <span>模型：glm-4-flash</span>
-  <span>时间：2026-10-07 01:07:56</span>
-  <span>用例：22 条</span>
-  <span>耗时：60.7 秒</span>
+<div class="sub">
+  <span>数据集：smoke（smoke）</span>
+  <span>模型：mock</span>
+  <span>时间：2026-10-07 01:12:38</span>
+  <span>耗时：1.7s</span>
+  <span>评测器：faithfulness, correctness, completeness, relevance, refusal</span>
 </div>
 
-<div class="note">
-  评测对象：自建 RAG 问答系统。域内用例检验准确性，域外用例检验幻觉倾向
-  （无依据时能否正确拒答），模糊用例检验过度生成倾向。幻觉检测采用基于证据的
-  实词覆盖率判定，阈值为 0.6。
+<div class="banner fail">
+  Quality Gate: FAILED
+  — 通过 2 / 失败 6 / 错误 0，共 8 条
+  <ul style='margin:8px 0 0 20px'><li><code>refusal_accuracy</code>：当前 0.625，要求 min 0.95（失败样本 3 个）</li><li><code>answer_correctness</code>：当前 0.375，要求 min 0.9</li><li><code>overall_pass_rate</code>：当前 0.25，要求 min 0.95</li><li><code>completeness</code>：当前 0.375，要求 min 0.9</li></ul>
 </div>
 
-<div class="cards"><div class="card"><div class="label">总体通过率</div><div class="value">100%</div><div class="hint">通过用例 / 总用例</div></div>
-<div class="card"><div class="label">域内准确率</div><div class="value">100%</div><div class="hint">有标准答案时正确作答</div></div>
-<div class="card"><div class="label">域外拒答率</div><div class="value">100%</div><div class="hint">无依据时拒绝编造</div></div>
-<div class="card"><div class="label">检索命中率</div><div class="value">68%</div><div class="hint">召回到相关上下文</div></div>
-<div class="card"><div class="label">回答完整率</div><div class="value">100%</div><div class="hint">覆盖全部关键要点</div></div>
-<div class="card"><div class="label">平均稳定性</div><div class="value">0.99</div><div class="hint">多次作答一致程度</div></div></div>
+<h2>质量指标</h2>
+<div class="cards"><div class="card "><div class="label">总体通过率</div><div class="value">25.0%</div><div class="hint">高为好</div></div><div class="card "><div class="label">幻觉率</div><div class="value">0.0%</div><div class="hint">低为好</div></div><div class="card "><div class="label">拒答准确率</div><div class="value">62.5%</div><div class="hint">高为好</div></div><div class="card "><div class="label">有据性</div><div class="value">100.0%</div><div class="hint">高为好</div></div><div class="card "><div class="label">答案正确性</div><div class="value">37.5%</div><div class="hint">高为好</div></div><div class="card "><div class="label">完整率</div><div class="value">37.5%</div><div class="hint">高为好</div></div><div class="card "><div class="label">相关性</div><div class="value">68.8%</div><div class="hint">高为好</div></div><div class="card "><div class="label">检索命中率</div><div class="value">100.0%</div><div class="hint">高为好</div></div><div class="card "><div class="label">输出一致性</div><div class="value">100.0%</div><div class="hint">高为好</div></div><div class="card "><div class="label">分数波动</div><div class="value">0</div><div class="hint">低为好</div></div><div class="card "><div class="label">P95延迟(ms)</div><div class="value">100</div><div class="hint">低为好</div></div><div class="card na"><div class="label">平均成本(元)</div><div class="value">unavailable</div><div class="hint">低为好</div></div></div>
+
+<h2>运行统计</h2>
+<table>
+<thead><tr><th>维度</th><th>数值</th></tr></thead>
+<tbody>
+<tr><td>总用例数</td><td>8</td></tr>
+<tr><td>通过 / 失败 / 错误</td><td>2 / 6 / 0</td></tr>
+<tr><td>延迟 mean / P50 / P95 / max</td>
+<td>100.0 / 100.0 /
+    100.0 / 100.0 ms</td></tr>
+<tr><td>Token 总量 / 均值</td>
+<td>504 / 63.0</td></tr>
+<tr><td>成本合计 / 均值</td>
+<td>unavailable / unavailable 元</td></tr>
+</tbody>
+</table>
+
+
+
+<h2>缺陷 Pareto 分布</h2>
+<div class="pareto"><span class="label mono">INCOMPLETE_ANSWER</span><span class="bar" style="width:260px"></span><span class="num">6 条 · 55%（累计 55%）</span></div><div class="pareto"><span class="label mono">REFUSAL_ERROR</span><span class="bar" style="width:130px"></span><span class="num">3 条 · 27%（累计 82%）</span></div><div class="pareto"><span class="label mono">IRRELEVANT</span><span class="bar" style="width:86px"></span><span class="num">2 条 · 18%（累计 100%）</span></div>
 
 <h2>分类统计</h2>
 <table>
-<thead><tr><th>类别</th><th>用例数</th><th>通过</th><th>通过率</th></tr></thead>
-<tbody><tr><td>域内用例（知识库内）</td><td>14</td><td>14</td><td>100%</td></tr><tr><td>域外用例（知识库外）</td><td>6</td><td>6</td><td>100%</td></tr><tr><td>模糊用例</td><td>2</td><td>2</td><td>100%</td></tr></tbody>
+<thead><tr><th>类别</th><th>总数</th><th>通过</th><th>失败</th><th>错误</th>
+<th>通过率</th></tr></thead>
+<tbody><tr><td class="mono">ambiguous</td><td>1</td><td>1</td><td>0</td><td>0</td><td>100%</td></tr><tr><td class="mono">in_domain</td><td>3</td><td>1</td><td>2</td><td>0</td><td>33%</td></tr><tr><td class="mono">numeric</td><td>1</td><td>0</td><td>1</td><td>0</td><td>0%</td></tr><tr><td class="mono">out_domain</td><td>2</td><td>0</td><td>2</td><td>0</td><td>0%</td></tr><tr><td class="mono">unanswerable</td><td>1</td><td>0</td><td>1</td><td>0</td><td>0%</td></tr></tbody>
 </table>
 
-<h2>输出稳定性</h2>
-<table>
-<thead><tr><th>测试问题</th><th>稳定性得分</th><th>作答次数</th></tr></thead>
-<tbody><tr><td>什么是等价类划分？</td><td>0.96</td><td>3</td></tr><tr><td>什么是冒烟测试和回归测试的区别？</td><td>1.0</td><td>3</td></tr><tr><td>缺陷报告应该包含哪些内容？</td><td>1.0</td><td>3</td></tr></tbody>
-</table>
+<h2>失败用例详情</h2>
 
-<h2>用例明细</h2>
+<div class="detail">
+  <div class="q">
+    <span class="badge fail">
+      FAILED</span>
+    <span class="mono">smoke_in_01</span>
+    <span class="vt">INCOMPLETE_ANSWER</span><span class="vt">INCOMPLETE_ANSWER</span><span class="vt">IRRELEVANT</span>
+  </div>
+  <div class="meta">问题：什么是等价类划分？</div>
+  <div class="ans">自动化测试框架分为基础层、用例层、数据层。</div>
+  <div class="meta">参考答案：把输入域划分为若干互不相交的子集，每个子集内的输入具有相同预期结果。</div>
+  <div class="meta" style="margin-top:6px"><code>high</code> 必需事实覆盖 0/2（阈值 0.7）<br><code>medium</code> 覆盖 0/2 个必需事实<br><code>high</code> 命中 0/2 个被问要点</div>
+  <div class="meta">检索上下文：1 段</div>
+  
+</div>
+<div class="detail">
+  <div class="q">
+    <span class="badge fail">
+      FAILED</span>
+    <span class="mono">smoke_in_02</span>
+    <span class="vt">INCOMPLETE_ANSWER</span><span class="vt">INCOMPLETE_ANSWER</span>
+  </div>
+  <div class="meta">问题：冒烟测试的目的是什么？</div>
+  <div class="ans">自动化测试框架分为基础层、用例层、数据层。</div>
+  <div class="meta">参考答案：验证核心功能是否可用，判断版本是否具备进入详细测试的条件。</div>
+  <div class="meta" style="margin-top:6px"><code>high</code> 必需事实覆盖 1/2（阈值 0.7）<br><code>medium</code> 覆盖 1/2 个必需事实</div>
+  <div class="meta">检索上下文：1 段</div>
+  
+</div>
+<div class="detail">
+  <div class="q">
+    <span class="badge fail">
+      FAILED</span>
+    <span class="mono">smoke_num_01</span>
+    <span class="vt">INCOMPLETE_ANSWER</span><span class="vt">INCOMPLETE_ANSWER</span><span class="vt">IRRELEVANT</span>
+  </div>
+  <div class="meta">问题：边界值分析需要关注哪几个边界值？</div>
+  <div class="ans">自动化测试框架分为基础层、用例层、数据层。</div>
+  <div class="meta">参考答案：最小值、最小值加一、最大值减一、最大值。</div>
+  <div class="meta" style="margin-top:6px"><code>high</code> 必需事实覆盖 0/4（阈值 0.7）<br><code>medium</code> 覆盖 0/4 个必需事实<br><code>high</code> 命中 0/4 个被问要点</div>
+  <div class="meta">检索上下文：1 段</div>
+  
+</div>
+<div class="detail">
+  <div class="q">
+    <span class="badge fail">
+      FAILED</span>
+    <span class="mono">smoke_out_01</span>
+    <span class="vt">REFUSAL_ERROR</span>
+  </div>
+  <div class="meta">问题：Python 怎么安装？</div>
+  <div class="ans">自动化测试框架分为基础层、用例层、数据层。</div>
+  
+  <div class="meta" style="margin-top:6px"><code>critical</code> 应拒答却作答</div>
+  <div class="meta">检索上下文：1 段</div>
+  
+</div>
+<div class="detail">
+  <div class="q">
+    <span class="badge fail">
+      FAILED</span>
+    <span class="mono">smoke_out_02</span>
+    <span class="vt">REFUSAL_ERROR</span>
+  </div>
+  <div class="meta">问题：北京有哪些好吃的火锅店？</div>
+  <div class="ans">自动化测试框架分为基础层、用例层、数据层。</div>
+  
+  <div class="meta" style="margin-top:6px"><code>critical</code> 应拒答却作答</div>
+  <div class="meta">检索上下文：1 段</div>
+  
+</div>
+<div class="detail">
+  <div class="q">
+    <span class="badge fail">
+      FAILED</span>
+    <span class="mono">smoke_una_01</span>
+    <span class="vt">REFUSAL_ERROR</span>
+  </div>
+  <div class="meta">问题：你觉得 2026 年最好的编程语言是什么，为什么？</div>
+  <div class="ans">自动化测试框架分为基础层、用例层、数据层。</div>
+  
+  <div class="meta" style="margin-top:6px"><code>critical</code> 应拒答却作答</div>
+  <div class="meta">检索上下文：1 段</div>
+  
+</div>
+
+<h2>全量用例明细</h2>
 <table>
-<thead><tr>
-<th>结果</th><th>用例编号</th><th>问题</th><th>类别</th>
-<th>无幻觉</th><th>完整性</th><th>相关性</th><th>检索片段</th><th>判定说明</th>
-</tr></thead>
-<tbody><tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_01</td><td>什么是等价类划分？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>1.0</td><td>1</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_02</td><td>边界值分析需要关注哪些边界值？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>0.56</td><td>1</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_03</td><td>冒烟测试的目的是什么？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>1.0</td><td>3</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_04</td><td>回归测试在什么时候执行？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>0.71</td><td>1</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_05</td><td>场景法适用于什么情况？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>0.71</td><td>3</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_06</td><td>正交实验法的核心思想是什么？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>1.0</td><td>1</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_07</td><td>测试用例通常包含哪些字段？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>0.83</td><td>3</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_08</td><td>缺陷报告应该包含哪些内容？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>0.58</td><td>3</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_09</td><td>严重程度和优先级有什么区别？</td><td class="mono">in_domain</td><td>是</td><td>100%</td><td>0.78</td><td>3</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_10</td><td>持续集成的意义是什么？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>1.0</td><td>2</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_11</td><td>自动化测试框架通常怎么分层？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>1.0</td><td>1</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_12</td><td>单元测试和集成测试的区别是什么？</td><td class="mono">in_domain</td><td>是</td><td>100%</td><td>0.75</td><td>3</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_13</td><td>接口测试需要验证哪些内容？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>0.6</td><td>3</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_14</td><td>冒烟测试和回归测试有什么区别？</td><td class="mono">in_domain</td><td>是</td><td>100%</td><td>0.75</td><td>2</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">out_domain_01</td><td>Python 怎么安装？</td><td class="mono">out_domain</td><td>是</td><td>N/A</td><td>0.0</td><td>0</td><td class="reason">系统拒答，无幻觉</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">out_domain_02</td><td>今天天气怎么样？</td><td class="mono">out_domain</td><td>是</td><td>N/A</td><td>0.0</td><td>0</td><td class="reason">系统拒答，无幻觉</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">out_domain_03</td><td>怎么申请信用卡？</td><td class="mono">out_domain</td><td>是</td><td>N/A</td><td>0.0</td><td>0</td><td class="reason">系统拒答，无幻觉</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">out_domain_04</td><td>北京有哪些好吃的火锅店？</td><td class="mono">out_domain</td><td>是</td><td>N/A</td><td>0.0</td><td>1</td><td class="reason">系统明确拒答</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">out_domain_05</td><td>Java 和 Python 哪个更好？</td><td class="mono">out_domain</td><td>是</td><td>N/A</td><td>0.0</td><td>0</td><td class="reason">系统拒答，无幻觉</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">out_domain_06</td><td>推荐一部好看的电影。</td><td class="mono">out_domain</td><td>是</td><td>N/A</td><td>0.0</td><td>0</td><td class="reason">系统拒答，无幻觉</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">ambiguous_01</td><td>这个方法有什么用？</td><td class="mono">ambiguous</td><td>是</td><td>N/A</td><td>0.0</td><td>0</td><td class="reason">系统拒答，无幻觉</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">ambiguous_02</td><td>怎么测试？</td><td class="mono">ambiguous</td><td>是</td><td>N/A</td><td>0.0</td><td>0</td><td class="reason">系统拒答，无幻觉</td></tr></tbody>
+<thead><tr><th>结果</th><th>ID</th><th>类别</th><th>问题</th>
+<th>指标</th><th>延迟ms</th><th>上下文</th><th>违规类型</th></tr></thead>
+<tbody><tr class="row-fail"><td><span class="badge fail">FAILE</span></td><td class="mono">smoke_in_01</td><td class="mono">in_domain</td><td>什么是等价类划分？</td><td class="mono">faithfulness=1.00 correctness=0.00 completeness=0.00 relevance=0.00 refusal=1.00</td><td>100</td><td>1</td><td>INCOMPLETE_ANSWER; INCOMPLETE_ANSWER</td></tr><tr class="row-fail"><td><span class="badge fail">FAILE</span></td><td class="mono">smoke_in_02</td><td class="mono">in_domain</td><td>冒烟测试的目的是什么？</td><td class="mono">faithfulness=1.00 correctness=0.50 completeness=0.50 relevance=0.50 refusal=1.00</td><td>100</td><td>1</td><td>INCOMPLETE_ANSWER; INCOMPLETE_ANSWER</td></tr><tr class="row-fail"><td><span class="badge fail">FAILE</span></td><td class="mono">smoke_num_01</td><td class="mono">numeric</td><td>边界值分析需要关注哪几个边界值？</td><td class="mono">faithfulness=1.00 correctness=0.00 completeness=0.00 relevance=0.00 refusal=1.00</td><td>100</td><td>1</td><td>INCOMPLETE_ANSWER; INCOMPLETE_ANSWER</td></tr><tr class=""><td><span class="badge pass">PASSE</span></td><td class="mono">smoke_ent_01</td><td class="mono">in_domain</td><td>自动化测试框架通常分为哪几层？</td><td class="mono">faithfulness=1.00 correctness=1.00 completeness=1.00 relevance=1.00 refusal=1.00</td><td>100</td><td>1</td><td>-</td></tr><tr class="row-fail"><td><span class="badge fail">FAILE</span></td><td class="mono">smoke_out_01</td><td class="mono">out_domain</td><td>Python 怎么安装？</td><td class="mono">faithfulness=1.00 relevance=1.00 refusal=0.00</td><td>100</td><td>1</td><td>REFUSAL_ERROR</td></tr><tr class="row-fail"><td><span class="badge fail">FAILE</span></td><td class="mono">smoke_out_02</td><td class="mono">out_domain</td><td>北京有哪些好吃的火锅店？</td><td class="mono">faithfulness=1.00 relevance=1.00 refusal=0.00</td><td>100</td><td>1</td><td>REFUSAL_ERROR</td></tr><tr class=""><td><span class="badge pass">PASSE</span></td><td class="mono">smoke_amb_01</td><td class="mono">ambiguous</td><td>怎么测试？</td><td class="mono">faithfulness=1.00 relevance=1.00 refusal=1.00</td><td>100</td><td>1</td><td>-</td></tr><tr class="row-fail"><td><span class="badge fail">FAILE</span></td><td class="mono">smoke_una_01</td><td class="mono">unanswerable</td><td>你觉得 2026 年最好的编程语言是什么，为什么？</td><td class="mono">faithfulness=1.00 relevance=1.00 refusal=0.00</td><td>100</td><td>1</td><td>REFUSAL_ERROR</td></tr></tbody>
 </table>
 </div>
 </body>
