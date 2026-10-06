@@ -300,3 +300,22 @@ python -m eval run --dataset smoke --mock
 ## License
 
 MIT
+
+---
+
+## 快速验证
+
+刚clone 下来想先确认能跑？看 [`QUICKSTART.md`](QUICKSTART.md)，5 分钟完成验证。
+
+**最快的确认方式**（无需 API key）：
+```bash
+python -m eval run --dataset smoke --mock
+```
+
+[English README](./README_EN.md) | [快速验证](./QUICKSTART.md)
+
+---
+
+## License
+
+MIT

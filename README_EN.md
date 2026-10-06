@@ -285,6 +285,19 @@ python -m eval run --dataset smoke --mock
 
 ---
 
+## Quick Verification
+
+Just cloned and want to confirm it works? See [`QUICKSTART.md`](QUICKSTART.md) (Chinese) — 5 minutes.
+
+**Fastest check** (no API key required):
+```bash
+python -m eval run --dataset smoke --mock
+```
+
+[中文 README](./README.md)
+
+---
+
 ## License
 
 MIT
