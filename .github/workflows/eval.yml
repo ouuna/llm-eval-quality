@@ -47,11 +47,35 @@ concurrency:
 
 jobs:
   # ==========================================================
+  # Job 0: workflow 自身语法检查
+  #
+  # 为什么放在最前面：workflow 语法错误会让整个文件作废，
+  # 表现为 CI 1 秒内直接Failure，连哪个 job 挂了都看不出来。
+  # Phase 13 的 `if: ${{ secrets... }}` 就是这样连续让 3 次 push 秒挂。
+  # 这个 job 失败说明「配置文件本身有问题」，后面的 job 根本不会跑，
+  # 所以它必须最先跑，且不依赖其他 job。
+  # ==========================================================
+  workflow-lint:
+    name: Workflow 语法检查
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 检查 workflow 配置
+        run: python -m tests.check_workflow
+
+  # ==========================================================
   # Job 1: 离线单元测试（无需任何密钥，秒级完成）
   # ==========================================================
   unit-tests:
     name: 单元测试（离线）
     runs-on: ubuntu-latest
+    needs: workflow-lint
 
     steps:
       - uses: actions/checkout@v7
@@ -133,7 +157,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [ unit-tests, offline-eval ]
     # 无密钥时明确跳过，而非假装成功
-    if: ${{ secrets.OPENAI_API_KEY != '' }}
+    # 注意：job 级 if 中不能写 ${{ }}，GitHub 解析器会报
+    # "Unrecognized named-value: 'secrets'"，导致整个 workflow 文件作废
+    if: secrets.OPENAI_API_KEY != ''
 
     steps:
       - uses: actions/checkout@v7

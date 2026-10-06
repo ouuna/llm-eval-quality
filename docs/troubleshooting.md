@@ -81,6 +81,50 @@ python -m eval config
 
 ---
 
+### GitHub Actions 一秒就失败，什么都没跑
+
+**现象**：push 上去后 Actions 几乎瞬间变红（1 秒左右），
+点进去看 Annotations 写着：
+
+```
+Invalid workflow file: .github/workflows/eval.yml
+Unrecognized named-value: 'secrets'
+```
+
+**原因**：workflow 文件本身有语法错误。
+**GitHub 会让整个文件作废**，不是某个 job 失败——所以你看不到
+任何 job 的执行记录，只有一条文件级别的报错。
+
+本项目踩过的具体坑：job 级 `if` 里写了 `${{ secrets.XXX }}`。
+正确写法是去掉 `${{ }}`：
+
+```yaml
+# 错：整个 workflow 会作废
+if: ${{ secrets.OPENAI_API_KEY != '' }}
+
+# 对
+if: secrets.OPENAI_API_KEY != ''
+```
+
+**这个错误连续3 次 push 都没被发现**，因为本地测试根本不跑 YAML。
+代价是真实 API 评测那3 次都没在 CI 上跑过。
+
+**现在怎么防**：
+
+```cmd
+python -m tests.check_workflow
+```
+
+本地跑，1 秒内出结果。会检查 job 级 if 误用表达式、tab 缩进、
+奇数缩进、`${{ }}` 未闭合、缺runs-on 等常见问题。
+这个检查也已加成 CI 的第一个 job（workflow-lint）。
+
+**教训**：workflow 的错误无法被 Python 测试发现，
+因为它们语法上合法、只是 GitHub 语义上无效。
+凡是靠外部工具解释执行的文件，都要单独加静态检查。
+
+---
+
 ### `No module named pytest`
 
 **原因**：pytest 装在另一个 Python 环境。

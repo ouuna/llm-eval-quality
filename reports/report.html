@@ -43,9 +43,9 @@ tr.fail { background:#fff8f8; }
 <h1>LLM 质量评测报告</h1>
 <div class="meta">
   <span>模型：glm-4-flash</span>
-  <span>时间：2026-10-07 00:31:42</span>
+  <span>时间：2026-10-07 00:46:17</span>
   <span>用例：22 条</span>
-  <span>耗时：50.6 秒</span>
+  <span>耗时：56.1 秒</span>
 </div>
 
 <div class="note">
@@ -59,7 +59,7 @@ tr.fail { background:#fff8f8; }
 <div class="card"><div class="label">域外拒答率</div><div class="value">100%</div><div class="hint">无依据时拒绝编造</div></div>
 <div class="card"><div class="label">检索命中率</div><div class="value">68%</div><div class="hint">召回到相关上下文</div></div>
 <div class="card"><div class="label">回答完整率</div><div class="value">100%</div><div class="hint">覆盖全部关键要点</div></div>
-<div class="card"><div class="label">平均稳定性</div><div class="value">0.97</div><div class="hint">多次作答一致程度</div></div></div>
+<div class="card"><div class="label">平均稳定性</div><div class="value">0.99</div><div class="hint">多次作答一致程度</div></div></div>
 
 <h2>分类统计</h2>
 <table>
@@ -70,7 +70,7 @@ tr.fail { background:#fff8f8; }
 <h2>输出稳定性</h2>
 <table>
 <thead><tr><th>测试问题</th><th>稳定性得分</th><th>作答次数</th></tr></thead>
-<tbody><tr><td>什么是等价类划分？</td><td>0.92</td><td>3</td></tr><tr><td>什么是冒烟测试和回归测试的区别？</td><td>1.0</td><td>3</td></tr><tr><td>缺陷报告应该包含哪些内容？</td><td>1.0</td><td>3</td></tr></tbody>
+<tbody><tr><td>什么是等价类划分？</td><td>0.96</td><td>3</td></tr><tr><td>什么是冒烟测试和回归测试的区别？</td><td>1.0</td><td>3</td></tr><tr><td>缺陷报告应该包含哪些内容？</td><td>1.0</td><td>3</td></tr></tbody>
 </table>
 
 <h2>用例明细</h2>
@@ -80,7 +80,7 @@ tr.fail { background:#fff8f8; }
 <th>无幻觉</th><th>完整性</th><th>相关性</th><th>检索片段</th><th>判定说明</th>
 </tr></thead>
 <tbody><tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_01</td><td>什么是等价类划分？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>1.0</td><td>1</td><td class="reason">回答内容均有上下文依据</td></tr>
-<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_02</td><td>边界值分析需要关注哪些边界值？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>0.78</td><td>1</td><td class="reason">回答内容均有上下文依据</td></tr>
+<tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_02</td><td>边界值分析需要关注哪些边界值？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>0.33</td><td>1</td><td class="reason">回答内容均有上下文依据</td></tr>
 <tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_03</td><td>冒烟测试的目的是什么？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>1.0</td><td>3</td><td class="reason">回答内容均有上下文依据</td></tr>
 <tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_04</td><td>回归测试在什么时候执行？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>0.14</td><td>1</td><td class="reason">回答内容均有上下文依据</td></tr>
 <tr class="pass"><td><span class="badge pass">PASS</span></td><td class="mono">in_domain_05</td><td>场景法适用于什么情况？</td><td class="mono">in_domain</td><td>是</td><td>N/A</td><td>0.71</td><td>3</td><td class="reason">回答内容均有上下文依据</td></tr>
