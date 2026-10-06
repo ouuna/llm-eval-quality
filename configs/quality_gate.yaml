@@ -1,0 +1,55 @@
+# ============================================================
+# Quality Gate 阈值配置
+# 依据：门禁分层原则，不同严重级别独立启用
+# ============================================================
+
+critical:
+  # 能力底线，不达标必须阻断
+  hallucination_rate:
+    max: 0.05
+    desc: 幻觉率必须低于此值
+  refusal_accuracy:
+    min: 0.95
+    desc: 域外拒答率必须高于此值
+  faithfulness:
+    min: 0.90
+    desc: 有据性必须高于此值
+  answer_correctness:
+    min: 0.90
+    desc: 答案正确性必须高于此值
+  regression_pass_rate:
+    min: 1.00
+    desc: 回归用例必须 100% 通过
+
+quality:
+  # 质量目标，允许小幅不达标
+  overall_pass_rate:
+    min: 0.95
+    desc: 总体通过率
+  completeness:
+    min: 0.90
+    desc: 回答完整率
+  relevance:
+    min: 0.60
+    desc: 答案相关性
+  retrieval_hit_rate:
+    min: 0.60
+    desc: 检索命中率
+
+performance:
+  # 性能与成本
+  p95_latency_ms:
+    max: 10000
+    desc: P95 延迟上限
+  avg_cost:
+    max: 0.5
+    desc: 平均成本上限，单位元
+
+stability:
+  # 稳定性与回归
+  consistency:
+    min: 0.85
+    desc: 输出一致性
+  score_std:
+    max: 0.15
+    desc: 分数波动上限

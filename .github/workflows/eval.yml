@@ -1,18 +1,56 @@
 name: LLM Quality Gate
 
+# ============================================================
+# 触发策略（需求第二十条）
+#
+#   PR    → smoke evaluation（快速反馈）
+#   main  → smoke + full（合并后全面回归）
+#   定时  → 每日回归，检测环境或依赖变化
+#   手动  → 可选数据集 + 可选启用 Judge/Semantic
+# ============================================================
+
 on:
-  push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
+    types: [ opened, synchronize, reopened ]
+
+  push:
+    branches: [ main ]
+
   schedule:
-    # 每周一 09:00 (UTC) 定时回归
-    - cron: '0 9 * * 1'
+    # 每日 02:00 UTC 定时回归
+    - cron: '0 2 * * *'
+
   workflow_dispatch:
+    inputs:
+      dataset:
+        description: 要运行的数据集
+        required: false
+        default: 'full'
+        type: choice
+        options: [ smoke, full, smoke+full ]
+      enable_judge:
+        description: 是否启用 LLM Judge（成本较高）
+        required: false
+        default: false
+        type: boolean
+      enable_semantic:
+        description: 是否启用 Embedding 语义评测
+        required: false
+        default: false
+        type: boolean
+
+# 新提交取消旧的未完成运行
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  evaluate:
-    name: LLM 质量评测
+  # ==========================================================
+  # Job 1: 离线单元测试（无需任何密钥，秒级完成）
+  # ==========================================================
+  unit-tests:
+    name: 单元测试（离线）
     runs-on: ubuntu-latest
 
     steps:
@@ -23,42 +61,154 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖
-        run: pip install pytest pytest-html
+        run: pip install pytest
 
-      - name: 校验密钥配置
+      - name: 运行离线测试
+        # Mock Provider 使这些测试无需 API 即可运行
+        run: |
+          python -m pytest tests/ \
+            --ignore=tests/evaluators/test_semantic.py \
+            --ignore=tests/evaluators/test_judge.py \
+            --ignore=tests/test_quality_gate.py \
+            -v --tb=short
+
+  # ==========================================================
+  # Job 2: 离线评测链路（Mock 模式，无需密钥）
+  # ==========================================================
+  offline-eval:
+    name: 评测链路（Mock）
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install pytest
+
+      - name: 验证数据集合法性
+        run: python -m eval validate --dataset full
+
+      - name: Mock 模式跑完整链路
+        run: python -m eval run --dataset smoke --mock
+
+      - name: 上传离线报告
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: offline-eval-reports
+          path: reports/
+          retention-days: 14
+
+  # ==========================================================
+  # Job 3: 评测器自检
+  # ==========================================================
+  evaluator-validation:
+    name: 评测器可靠性验证
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 评测器验证报告
+        run: python -m eval.evaluators.validation
+
+      - name: 回归集统计
+        run: python -m eval.datasets.regression
+
+  # ==========================================================
+  # Job 4: 真实 API 评测（需要密钥）
+  # ==========================================================
+  evaluation:
+    name: 质量评测
+    runs-on: ubuntu-latest
+    needs: [ unit-tests, offline-eval ]
+    # 无密钥时明确跳过，而非假装成功
+    if: ${{ secrets.OPENAI_API_KEY != '' }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install pytest
+
+      - name: 决定数据集
+        id: ds
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "value=smoke" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "value=smoke+full" >> $GITHUB_OUTPUT
+          else
+            echo "value=${{ inputs.dataset || 'full' }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 配置校验
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
         run: |
           if [ -z "$OPENAI_API_KEY" ]; then
-            echo "::error::未配置 OPENAI_API_KEY secret，请前往仓库 Settings → Secrets 配置"
+            echo "::error::未配置 OPENAI_API_KEY secret"
             exit 1
           fi
-          echo "密钥已配置，开始评测"
+          echo "模型：$OPENAI_MODEL_NAME"
+          echo "数据集：${{ steps.ds.outputs.value }}"
 
       - name: 执行质量评测
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
-        # 门禁不通过时退出码非 0，PR 会被自动标记为失败
         run: |
-          python -m pytest tests/ -v --tb=short \
-            --html=reports/pytest_report.html \
-            --junitxml=reports/junit.xml
+          EXTRA=""
+          if [ "${{ inputs.enable_judge }}" = "true" ]; then EXTRA="$EXTRA --judge"; fi
+          if [ "${{ inputs.enable_semantic }}" = "true" ]; then EXTRA="$EXTRA --semantic"; fi
+          python -m eval run --dataset "${{ steps.ds.outputs.value }}" $EXTRA
 
-      - name: 生成 JSON / HTML / CSV 报告
+      - name: 基线对比
         if: always()
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
-        # || true 保证评测失败时仍能产出报告，便于定位问题
-        run: python tests/evaluator.py || true
+        run: |
+          if [ -f reports/baseline.json ]; then
+            python -m eval run --dataset "${{ steps.ds.outputs.value }}" \
+              --compare-baseline || true
+          else
+            python -m eval run --dataset "${{ steps.ds.outputs.value }}" \
+              --save-baseline
+          fi
 
       - name: 上传报告制品
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: eval-reports
+          name: eval-reports-${{ github.run_number }}
           path: reports/
           retention-days: 30
+
+      - name: 写入步骤摘要
+        if: always()
+        run: |
+          {
+            echo "### 评测报告"
+            echo ""
+            echo "- 制品：\`eval-reports-${{ github.run_number }}\`（保留 30 天）"
+            echo "- 下载：Actions 页面 → Artifacts"
+          } >> $GITHUB_STEP_SUMMARY

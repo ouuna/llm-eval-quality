@@ -1,422 +1,283 @@
-# LLM 质量评测系统（LLM Evaluation Harness）
+# LLM 质量评测与质量门禁系统
 
-基于自建 RAG 问答系统，量化评估大模型输出的**准确性、拒答能力与输出稳定性**，定位并修复评测算法自身引入的误报问题。
-
-> 测试领域知识问答场景 · Python 标准库实现 · 零第三方依赖
-
----
-
-## 一、项目背景
-
-大模型（RAG 问答系统）的输出**无法直接判断对错**。用户提问后模型总能返回一段看似合理的内容，但其中可能包含完全编造的信息。因此，AI 质量保障的核心工作不是"测功能"，而是**建立一套可量化、可复现的输出质量评估机制**。
-
-本项目搭建了一个最小可运行的评测闭环：
-
-```
-知识库 → 检索 → 大模型生成 → 逐条评测 → 量化报告
-```
-
-## 二、整体架构
-
-```
-llm_eval_project/
-├── config.yaml# 运行配置：知识库路径、阈值、门禁、报告格式
-├── cases.csv                    # 评测用例（业务方可直接维护）
-├── app/
-│   └── rag.py                   # 【被测对象】RAG 问答系统
-├── knowledge/
-│   └── test_basics.txt# 知识库：13 条软件测试领域文档
-├── tests/
-│   ├── config_loader.py         # 配置与用例加载（零依赖 YAML 解析 + CSV）
-│   ├── evaluator.py             # 评测核心：6 项指标 + 报告生成
-│   ├── ab_experiment.py         # A/B 对照实验：验证防幻觉约束的实际效果
-│   └── test_quality_gate.py     # pytest 集成：31 项断言与质量门禁
-├── .github/
-│   └── workflows/eval.yml       # CI：提交自动触发质量门禁
-├── reports/                     # 评测报告（json / html / csv）
-├── requirements.txt
-└── README.md
-```
-
-### 被测系统数据流（app/rag.py）
-
-| 环节 | 函数 | 说明 |
-|---|---|---|
-| 知识库加载 | `load_knowledge()` | 读取文档，按空行切分为 13 条；统一处理 CRLF/LF 换行 |
-| 语义检索 | `retrieve()` | 词组切分 + 同义词扩展 + 词长加权打分，取 Top-3 |
-| 模型调用 | `call_llm()` | 标准库 urllib 调用 OpenAI 兼容接口，60s 超时 + 3 次重试 |
-| 答案生成 | `ask()` | 组装 Prompt，注入防幻觉约束；检索为空时短路拒答 |
-
-### 评测系统数据流（tests/run_eval.py）
-
-| 环节 | 函数 | 说明 |
-|---|---|---|
-| 幻觉检测 | `check_hallucination()` | 三级判定：拒答识别 → 实词覆盖率 → 阈值判定 |
-| 答案相关性 | `relevance_score()` | 问题实词在答案中的覆盖比例 |
-| 输出一致性 | `measure_consistency()` | 同一问题重复 3 次，Jaccard 相似度均值 |
-| 结果汇总 | `main()` | 生成 JSON 报告并打印摘要 |
+> 面向 RAG 问答系统的自动化质量评测体系
+> 幻觉检测 · 正确性验证 · 质量门禁 · 持续集成
 
 ---
 
-## 三、核心设计：框架与业务数据解耦
+## 这是什么
 
-真实业务中，评测系统的代码不应随业务场景改动。本项目通过三层解耦实现：
+给 RAG 问答系统做**自动化质量检测**的框架。
 
-| 层 | 载体 | 维护方 | 换业务时动作 |
-|---|---|---|---|
-| 配置层 | `config.yaml` | 测试/开发 | 修改阈值、知识库路径、模型参数 |
-| 数据层 | `knowledge/`、`cases.csv` | 业务方 | 替换业务文档、维护测试关注点 |
-| 代码层 | `app/`、`tests/` | 开发 | **不需改动** |
+**核心问题**：AI 的回答是一段自然语言，没法像测按钮那样断言"点一下应该弹这个框"。而它最严重的失败不是"答错"，是"**一本正经地编造**"。
 
-### 用例数据格式（cases.csv）
-
-```csv
-case_id,question,category,expected_output,key_points,remark
-in_domain_01,"什么是等价类划分？",in_domain,"把输入域划分为若干互不相交的子集...",,
-in_domain_14,"冒烟测试和回归测试有什么区别？",in_domain,"冒烟测试验证核心功能...","冒烟测试验证核心功能是否可用|回归测试修改代码后重新执行用例",对比型
-out_domain_01,"Python 怎么安装？",out_domain,,,域外场景应拒答
-```
-
-字段说明：
-- `category`：`in_domain` / `out_domain` / `ambiguous`
-- `expected_output`：参考答案，域内用例必填，域外用例必须留空
-- `key_points`：关键要点，用 `|` 分隔。**仅对比型问题需要**——单点问题的完整性由相关性保证
-- `validate_cases()` 提供前置校验，非法配置在评测开始前即失败
-
-### 配置示例
-
-```yaml
-system:
-  knowledge_files:      # 支持多知识库
-    - knowledge/test_basics.txt
-  top_k: 3
-prompt:
-  enable_hallucination_guard: true   # A/B 实验开关
-evaluation:
-  hallucination_threshold: 0.6
-  stability_repeat: 3
-gate:
-  min_refusal_rate: 1.0              # 核心防幻觉门禁
-```
+**本系统的作用**：量化"这个 AI 系统答得有多靠谱"→ 不达标时阻断 CI。
 
 ---
 
-## 四、评测用例设计
-
-### 用例分三类
-
-这是整个项目最关键的设计。**只测"知识库内的题"无法发现幻觉**，必须构造模型无法作答的场景。
-
-| 类型 | 数量 | 场景 | 期望行为 | 考察目标 |
-|---|---|---|---|---|
-| `in_domain` | 14 | 知识库内 | 准确作答 | 答案准确性、检索有效性 |
-| `out_domain` | 6 | 知识库外 | **必须拒答** | **幻觉倾向**（核心） |
-| `ambiguous` | 2 | 表述模糊 | 不强行作答 | 过度生成倾向 |
-
-`out_domain` 用例覆盖：编程语言安装、天气、信用卡、餐饮推荐、技术选型对比、影视推荐——均为模型极易凭"通用知识"编造的内容。
-
----
-
-## 五、评测指标
-
-### 4.1 检索命中率（Retrieval Hit Rate）
-
-问题能否从知识库中检索到相关片段。检索失败则模型只能依赖参数化记忆作答，幻觉风险显著上升。
-
-### 4.2 域内幻觉率（In-domain Hallucination Rate）
-
-域内用例中，答案包含无上下文依据陈述的比例。越低越好。
-
-### 4.3 域外拒答率（Out-of-domain Refusal Rate）
-
-域外用例中，模型正确拒答（返回空或明确说明"未提及"）的比例。**越高越好**，是防幻觉能力的直接度量。
-
-### 4.4 输出一致性（Consistency）
-
-同一问题重复提问 N 次，采用 Jaccard 相似度（字符集合交集/并集）量化稳定性。LLM 具有采样随机性，不稳定的输出无法进入生产环境。
-
----
-
-## 六、幻觉检测算法
-
-### 5.1 三级判定策略
-
-```
-Level 1  答案为空或含拒答标记      → 无幻觉（正确拒答）
-Level 2  检索上下文为空但有回答    → 判定幻觉（无依据生成）
-Level 3  逐句计算实词覆盖率        → 低于阈值(0.6) 判定幻觉
-```
-
-### 5.2 为什么用"实词覆盖率"而非整句匹配
-
-**问题现象**：初版算法采用整句精确匹配，域内幻觉率达**71%**，与人工核对结果严重不符。
-
-**根因**：大模型会将原文改写后再作答，例如：
-
-| 原文 | 模型输出 |
-|---|---|
-| 关注输入和输出边界 | 需要关注哪些边界值 |
-| 冒烟测试：验证核心功能是否可用 | 冒烟测试是验证核心功能是否可用 |
-
-改写导致整句无法精确匹配，产生**大量误报**。
-
-**解决**：提取中文实词（去除"的/了/和/是"等虚词与连接词），计算回答句子实词在上下文句子中的最大覆盖率，阈值 0.6。修复后幻觉率降至 7%。
-
-### 5.3 已知局限
-
-**对比型/整合型回答仍存在误报。**
-
-用例 `in_domain_14`（"冒烟测试和回归测试的区别"）中，模型将两段原文整合为一句对比表述，跨越了两个上下文片段，导致单句匹配失败、被误判为幻觉。
-
-**改进方向**（未实现）：
-- 对比型回答按子句拆分后分别匹配
-- 引入语义相似度（Embedding）替代字符级覆盖
-- 引入第三方 LLM-as-Judge 作为交叉验证
-
----
-
-## 七、实测结果
-
-**环境**：Python 3.13.14 / Windows 11 /模型 glm-4-flash（智谱）
-
-| 指标 | 结果 | 门禁 | 评价 |
-|---|---|---|---|
-| 总体通过率 | 100% | ≥95% | 22/22 全部通过 |
-| 域内准确率 | 100% | — | 14/14 正确且完整 |
-| **域外拒答率** | **100%** | =100% | 6/6 拒绝编造，防幻觉约束有效 |
-| 无幻觉率 | 100% | ≥95% | 无编造行为 |
-| 回答完整率 | 100% | ≥95% | 对比型问题均覆盖全部要点 |
-| 检索命中率 | 68% | ≥60% | 达标，但 32% 未召回，仍有优化空间 |
-| 平均相关性 | 0.51 | ≥0.40 | 达标，拒答用例计为 0 拉低均值 |
-| 输出稳定性 | 0.95 | ≥0.85 | 3 组问题×3 次作答，Jaccard 均值 |
-
-**pytest 集成**：29 项检查全部通过（22 条逐用例断言 + 7 项质量门禁），耗时 68 秒。
-
-### 关键结论
-
-1. **防幻觉约束有效**：Prompt 中显式拒答指令 + 检索为空时短路返回的双重机制，使模型在无依据场景下全部选择拒答而非编造。
-2. **检索是质量瓶颈**：32% 的用例未召回相关片段，是答案相关性偏低的主因。
-3. **评测工具自身也会失准**：71% → 7% 的修正过程暴露了基于证据的检测方法对改写型回答的固有缺陷，**评测工具的可信度需要被验证，而非默认采信**。
-
----
-
-## 八、部署与运行
-
-### 一键部署
+## 快速开始
 
 ```bash
-git clone <your-repo-url>
-cd llm-eval-quality
-pip install pytest
-cp env.example .env   # 填入你的密钥
+python -m eval list                          # 列出数据集
+python -m eval validate --dataset full       # 验证数据集
+python -m eval run --dataset smoke --mock    # 离线评测（无需 API，4 秒）
+python -m eval run --dataset full            # 完整评测
+python -m eval case --id smoke_in_01 --detect "错误回答"  # 看判定过程
 ```
 
-### CI 密钥配置
+---
 
-若启用 GitHub Actions，需在仓库 Settings → Secrets 中配置三个变量：
+## 项目规模
 
-| Secret 名 | 值 |
+| 模块 | 规模 |
 |---|---|
-| `OPENAI_API_KEY` | 你的 API Key |
-| `OPENAI_BASE_URL` | 如 `https://open.bigmodel.cn/api/paas/v4` |
-| `OPENAI_MODEL_NAME` | 如 `glm-4-flash` |
+| 核心代码 `eval/` | 30 文件 7477 行 |
+| 测试 `tests/` | 18 文件 3778 行 |
+| 技术文档 `docs/` | 1286 行 |
+| 数据集 | 73 条（8 + 19 + 16 + 30）|
+| 指标 | 12 项 |
+| 历史缺陷档案 | 16 条 |
 
-**密钥不得写入代码或配置文件。** 本项目代码全部通过 `os.getenv` 读取环境变量。
-
-### 本地环境准备
-
-```cmd
-setx OPENAI_API_KEY "你的 API Key"
-setx OPENAI_BASE_URL "https://open.bigmodel.cn/api/paas/v4"
-setx OPENAI_MODEL_NAME "glm-4-flash"
-```
-
-> 环境变量仅对新开的命令行窗口生效。
-
-### 手动验证被测系统
-
-```cmd
-python app\rag.py
-```
-
-### 执行完整评测（生成报告）
-
-```cmd
-python tests\evaluator.py
-```
-
-输出终端摘要，并生成 `reports/eval_results.json` 与 `reports/report.html`。
-
-### 通过 pytest 执行（含质量门禁）
-
-```cmd
-pytest tests\ -v
-```
-
-共29 项检查：22 条逐用例断言 + 7 项整体质量门禁。
-门禁不通过时退出码非 0，可直接用于 CI 阻断。
-
-### 质量门禁阈值
-
-| 门禁项 | 阈值 | 含义 |
-|---|---|---|
-| 总体通过率 | ≥ 95% | 通过用例 / 总用例 |
-| 域外拒答率 | = 100% | 有依据时必须拒答，**核心防幻觉指标** |
-| 无幻觉率 | ≥ 95% | 全体用例无编造 |
-| 检索命中率 | ≥ 60% | 上下文召回能力 |
-| 平均相关性 | ≥ 0.40 | 回答切题程度 |
-| 输出稳定性 | ≥ 0.85 | 多次作答一致程度 |
-
-### 持续集成
-
-`.github/workflows/eval.yml` 配置了 GitHub Actions：
-
--触发时机：push / pull request / 每周定时
-- 执行内容：质量评测 + 门禁判定 + 报告制品上传
-- 密钥管理：模型 API Key 配置于仓库 Secrets，不进入代码
-- 产出：报告制品保留 30 天
+**零第三方依赖**：核心逻辑全部用 Python 标准库（json / urllib / re / csv / statistics）。PyYAML 存在时自动优先使用。
 
 ---
 
-## 九、开发过程中定位并修复的问题
+## 核心能力
 
-| # | 现象 | 根因 | 定位方式 |
+### 1. 声明级幻觉检测
+
+**旧方法（字符覆盖率）的硬盲区**：
+
+| 回答 | 上下文 | 旧判定 | 正确 |
 |---|---|---|---|
-| 1 | 脚本运行无任何输出 | 文本编辑器粘贴引入零宽字符，`if __name__ == "__main__"` 判断恒为假 | 检查源码字符异常 |
-| 2 | 检索结果恒为空 | 检索按单字匹配，中文单字不构成语义边界 | 打印关键词与打分过程 |
-| 3 | 修复后检索仍为空 | 知识库文件为 CRLF 换行，按 `\n\n` 切分失败，全文被视为单条文档 | 读取文件字节码确认 `0d0a` |
-| 4 | 域内幻觉率 71%（异常） | 检测算法整句精确匹配，模型改写即误判 | 人工核对抽样答案 |
-| 5 | 答案相关性恒为 0 | 问题实词被停用词表完全过滤 | 统计停用词命中情况 |
-| 6 | 检索命中率偏低 | 缺少同义词扩展，问法与文档表述不一致时无法命中 | 统计未命中用例的问法特征 |
-| 7 | pytest 全部用例 ERROR（UnboundLocalError） | 评测异常分支引用了未赋值的 `contexts` 变量 | 读完整错误堆栈，定位到 `evaluator.py:301` |
-| 8 | pytest 7 秒内 22 条全 FAILED | config.yaml 的 Prompt 模板含 `{domain}` 占位符，但代码只传入 context/question，触发 KeyError | 打印实际加载的模板，与 `.format()` 参数比对 |
-| 9 | CSV 用例 category 全部非法 | 导出时手工加引号，csv 模块再次转义导致值带引号 | 改用 `csv.QUOTE_MINIMAL` 让模块自行处理转义 |
-| 10 | A/B 实验无输出 | 后台运行时误删重定向的日志文件 | 重跑并改用 reports/ 目录下的日志 |
+| 中国的首都是**上海** | 北京是中国的首都 | 无幻觉 ❌ | **有幻觉** |
+| 分为基础层、用例层、**报告层** | …数据层 | 无幻觉 ❌ | **有幻觉** |
+| 由 **Kent Beck** 提出 | …修改代码后 | 无幻觉 ❌ | **有幻觉** |
+| 今天天气晴朗 **25 度** | 等价类划分 | 无幻觉 ❌ | **有幻觉** |
+
+**根因**：字符覆盖率不区分实词的"角色"，"上海"和"北京"在字符层面无法分辨。
+
+**本系统**：拆成原子声明 → 逐条验证 → 叠加四类冲突检测（forbidden 事实 / 数字 / 否定极性 / 拉丁词）→ 跑题检测。
+
+**实测 30 条 Gold Set，零漏报。**
 
 ---
 
-## 十、技术要点
+### 2. 三类用例 + 12 个类别
 
-### 9.1 框架与业务数据解耦
-
-三层解耦，换业务场景不需改动代码：
-
-| 层 | 载体 | 维护方 |
+| 类型 | 场景 | 期望行为 |
 |---|---|---|
-| 配置层 | `config.yaml` | 测试 / 开发 |
-| 数据层 | `knowledge/`、`cases.csv` | 业务方 |
-| 代码层 | `app/`、`tests/` | 开发 |
+| `in_domain` | 知识库内有答案 | 准确作答 |
+| `out_domain` | 知识库中**无答案** | **必须拒答** |
+| `ambiguous` | 问题不完整 | 要求澄清 |
 
-`config_loader.py` 实现了面向固定结构的**零依赖 YAML 解析**，若环境已装 PyYAML 则自动优先使用。`validate_cases()` 提供用例数据的前置校验，非法配置在评测开始前即失败。
+**域外用例是幻觉检测的核心** —— 幻觉只在模型没资料时才暴露。
 
-### 9.2 消融实验验证设计有效性
+扩展至 12 类：多跳、否定、数字、同义改写、上下文冲突、Prompt Injection 等。
 
-防幻觉约束并非"看起来有用"，而是通过 A/B 对照实验量化其收益（无幻觉率 32% → 100%）。检索命中率在两组中保持不变，佐证了归因正确性——约束作用于生成阶段，未污染检索指标。
+---
 
-### 9.3 零第三方依赖
+### 3. 三种评测方法并存
 
-核心逻辑全部使用标准库实现：`json`（数据处理）、`urllib`（HTTP）、`re`（文本切分）、`csv`（用例与报告）、`statistics`（指标计算）。调用大模型 API 未使用 `openai` SDK，体现对 HTTP 协议与 JSON 数据流的直接理解。
+| 方法 | 强项 | 弱项 | 定位 |
+|---|---|---|---|
+| **Lexical** | 确定性、零成本 | 同义改写与实体调换是盲区 | Baseline |
+| **Semantic** | 识别同义改写 | 粒度粗，无法定位声明 | 辅助 |
+| **LLM Judge** | 复杂语义理解 | 有偏差、成本高 | 交叉验证 |
 
-### 9.2 防幻觉双重机制
+**三者不合并成一个分数**，因为失效模式不同。
+
+实测分歧（同义改写）：Lexical 0.474 vs Semantic 0.812 —— **存在结论相反的样本**。
+
+---
+
+### 4. 三态而非两态
 
 ```python
-# 机制一：检索为空时短路，不进入生成环节
-if not contexts:
-    return "", []
-
-# 机制二：Prompt 层显式拒答约束
-"如果参考资料中没有相关信息，请明确回答'参考资料中未提及'，不要编造或推测。"
+Status.PASSED / Status.FAILED / Status.ERROR
 ```
 
-### 9.3 稳定性工程
+**解决的真实缺陷**：旧实现中 API 调用失败 → 空输出 → 幻觉检测首行 `if not output.strip(): return True` 判为"无幻觉" → **API 失败被当成通过**。
 
-| 措施 | 参数 |
+`error` 不计入通过率分母 —— error 是"评测未完成"，不是"质量表现"。
+
+---
+
+### 5. 分层质量门禁
+
+| 层 | 含义 | 特点 |
+|---|---|---|
+| `critical` | 能力底线 | 严格（域外拒答 = 100%）|
+| `quality` | 质量目标 | 允许小幅不达标 |
+| `performance` | 性能与成本 | 按项目调整 |
+| `stability` | 稳定性 | 按场景调整 |
+
+**门禁失败必须可诊断**：
+
+```
+[answer_correctness] 未达标：0.8500 >= 0.9
+失败样本：case-01, case-02, case-03
+
+修复方向：
+  answer_correctness: 完善 required_facts 标注；检查被测系统 Prompt
+```
+
+---
+
+### 6. 缺陷闭环
+
+```
+Bug 发现 → 复现 → 固化用例 → 修复 → 回归测试 → CI 保护
+```
+
+**16 条历史缺陷全部有档案**：`discovered_in` / `root_cause` / `fix_summary` / `verify_by`。
+
+| 层 | 数量 |
 |---|---|
-| HTTP 超时 | 60s |
-| 失败重试 | 3 次，指数退避 2s |
-| 生成温度 | 0.3（降低随机性） |
-| 调用间隔 | 0.6s（避免限流） |
-| 环境变量校验 | 启动即检查，缺失时明确报错 |
+| `evaluator_bug` | 7 |
+| `method_limit` | 5 |
+| `env_issue` | 4 |
 
-### 9.4 可复现性
-
-- 评测数据集独立成文件，用例可增删，不修改核心逻辑
-- 报告含时间戳、模型标识、逐用例明细
-- 相同输入下指标可复现（temperature=0.3）
+**9 条标为 `xfail` 而非通过** —— 明确声明"这 9 条不由声明级验证覆盖"，不假装通过。
 
 ---
 
-## 十一、A/B 对照实验
+### 7. 离线可运行
 
-### 实验目的
-
-验证 Prompt 中的防幻觉约束（"资料未提及时请明确说明，不要编造"）是否具有**实质作用**，而非仅凭直觉断言有效。
-
-### 方法
-
-对同一批 22 条用例执行两次全量评测：
-- **对照组**：运行时关闭 `prompt.enable_hallucination_guard`
-- **实验组**：开启该约束
-
-除Prompt 外，所有条件（模型、temperature、检索策略、用例）完全一致。
-
-### 结果
-
-| 指标 | 对照组（无约束） | 实验组（有约束） | 差异 |
-|---|---|---|---|
-| 域外拒答率 | 83% | **100%** | +17% |
-| 无幻觉率 | 32% | **100%** | **+68%** |
-| 域内准确率 | 0% | **100%** | **+100%** |
-| 总体通过率 | 32% | **100%** | **+68%** |
-| 检索命中率 | 68% | 68% | 0% |
-
-**检索命中率不变**符合预期——该约束作用在生成阶段，对检索环节无影响，这佐证了实验设计的归因正确性。
-
-### 典型案例
-
-问题：**北京有哪些好吃的火锅店？**（知识库无此内容，系统应拒答）
-
-- **对照组**：
-  > 很抱歉，您提供的参考资料中并没有关于北京火锅店的具体信息。因此，我无法根据这些资料回答。不过，我可以根据一般信息推荐一……
-
-  ↑ 虽然未直接编造，但**转而基于模型内部知识继续作答**，本质上仍是脱离依据的生成。
-
-- **实验组**：
-  > 参考资料中未提及。
-
-  ↑ 严格在证据边界内停止。
-
-### 结论
-
-1. 防幻觉约束使**无幻觉率提升 68 个百分点**，域内准确率从 0% 恢复至 100%。
-2. 域内准确率归零的根因：无约束时模型倾向补充模型自有知识，导致回答偏离参考资料，反而在域内场景失准。
-3. 消融实验（ablation study）方式验证了 Prompt 工程措施的实际收益，而非停留在"看起来合理"。这是评估 Prompt 变更是否有效的标准做法。
-
-**运行方式**：
-```cmd
-python tests\ab_experiment.py
+```bash
+python -m eval run --dataset smoke --mock    # 4 秒，无需 API
 ```
-输出保存至 `reports/ab_experiment.json`。
 
-### 为什么需要对照实验
+Mock Provider 提供 12 种故障注入：正确答案、错误答案、幻觉、实体调换、拒答、空回答、超时、API 错误、非法 JSON、上下文冲突等。
 
-「域外拒答率 100%」这个结果，如果不说明约束在其中起了什么作用，
-就无法判断是被测系统的能力，还是 Prompt 恰好写对了。
-
-消融实验的价值在于**把"看起来有用"变成"可量化"**：关闭约束后指标大幅劣化，
-且检索侧指标保持不变，两者对照即可确认改进来自约束本身而非其他变量。
-这也是评估 Prompt 变更、模型升级、检索策略调整是否有效的标准做法。
+**CI 无密钥时明确跳过真实评测，而非假装成功。**
 
 ---
 
-## 十二、后续规划
+## 项目结构
 
-- [x] `pytest` 质量门禁 + 自生成 HTML 可视化报告
-- [x] GitHub Actions 持续集成（PR 门禁 + 定时回归 + 报告制品）
-- [x] 完整性检测（对比型问题要点覆盖分析）
-- [x] 框架与业务数据解耦（config.yaml + cases.csv，业务方可维护）
-- [x] A/B 对照实验验证防幻觉约束收益（无幻觉率 +68%）
-- [ ] 引入 Embedding 语义检索，提升检索命中率（当前 68%，是主要瓶颈）
-- [ ] 对比型回答的幻觉检测改进（子句拆分 / LLM-as-Judge 交叉验证）
-- [ ] 扩展用例规模并建立指标历史基线，实现趋势监控
-- [ ] 接入可视化质量看板，支撑线上问题定位
+```
+eval/
+├── schemas/         Dataset / EvalCase / GroundTruth / CaseResult / EvalReport
+├── datasets/        smoke(8) / full(19) / regression(16) / gold_set(30)
+├── providers/       SUT 抽象 + RAGProvider + MockProvider(12 场景)
+├── evaluators/      faithfulness / correctness / semantic / judge / validation
+├── quality_gate/    分层门禁 + 诊断
+├── reporting/       HTML / JSON / CSV
+├── cli/             命令行入口
+├── runner.py        评测编排
+├── baseline.py      基线对比
+└── mutation.py      变异测试
+
+configs/quality_gate.yaml
+tests/{unit,evaluators,regression}/
+```
+
+详见 [`docs/architecture.md`](docs/architecture.md)。
+
+---
+
+## 运行命令
+
+| 命令 | 说明 |
+|---|---|
+| `python -m eval list` | 列出可用数据集 |
+| `python -m eval validate --dataset full` | 验证数据集 |
+| `python -m eval run --dataset smoke` | 执行评测 |
+| `python -m eval run --dataset smoke --mock` | 离线评测 |
+| `python -m eval run --dataset full --judge --semantic` | 增强评测 |
+| `python -m eval run --dataset smoke --save-baseline` | 保存基线 |
+| `python -m eval run --dataset smoke --compare-baseline` | 检测退化 |
+| `python -m eval report --input reports/eval_results.json` | 重新生成报告 |
+| `python -m eval gate --input reports/eval_results.json` | 只跑门禁 |
+| `python -m eval case --id smoke_in_01` | 用例详情 |
+| `python -m eval.evaluators.validation` | 评测器可靠性验证 |
+| `python -m eval.datasets.regression` | 回归集统计 |
+| `python -m eval.mutation` | 变异测试 |
+
+**退出码**：`0` 通过 / `1` 门禁失败 / `2` 配置错误 / `3` 数据错误 / `4` 运行错误
+
+---
+
+## CI 策略
+
+| 触发 | 数据集 | 密钥需求 |
+|---|---|---|
+| PR | smoke | 无（离线测试始终执行）|
+| push main | smoke + full | 可选 |
+| 定时（每日） | full | 可选 |
+| 手动 | 可选 | 可选 |
+
+四个 Job：离线单元测试 / Mock 评测链路 / 评测器自检 / 真实 API 评测。
+
+---
+
+## 已知局限
+
+**这些是真实的未解决问题，不隐藏。**
+
+| 局限 | 影响 |
+|---|---|
+| **Gold Set 存在循环论证** | 样本与标签均由项目作者构造，指标可信度受限 |
+| **Judge 会漏判实体调换** | 实测 score=0.72 但 hallucination=False |
+| **Judge 与被测系统同模型** | 自我偏好未验证 |
+| 声明级验证对对比型回答误报 | 跨上下文整合的句子易被误判 |
+| 冲突检测依赖 SVO 语序 | 主谓倒装场景漏检 |
+| 检索仍是关键词匹配 | 命中率 68% 是瓶颈 |
+| 未开 branch protection | CI 失败不能真正阻止合并 |
+
+**真正的评测器可靠性验证需要**：他人撰写的答案 + 至少两人独立标注 + 200+ 样本。
+
+详见 [`docs/evaluation.md`](docs/evaluation.md) 第八节。
+
+---
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | 架构、分层、关键设计决策、扩展点 |
+| [`docs/metrics.md`](docs/metrics.md) | 12 项指标的定义/算法/阈值/优缺点/已知误差 |
+| [`docs/dataset.md`](docs/dataset.md) | 12 类别规范、Ground Truth 五要素、增补原则 |
+| [`docs/evaluation.md`](docs/evaluation.md) | 评测方法、为什么这么设计、怎么证明可靠 |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | 常见问题与排查 |
+
+---
+
+## 环境变量
+
+```cmd
+setx OPENAI_API_KEY "你的key"
+setx OPENAI_BASE_URL "https://open.bigmodel.cn/api/paas/v4"
+setx OPENAI_MODEL_NAME "glm-4-flash"
+
+REM 可选：Judge 与 Embedding 独立配置（支持交叉验证）
+setx JUDGE_MODEL_NAME "glm-4-plus"
+```
+
+> `setx` 只对新开的命令行窗口生效。
+
+---
+
+## 测试
+
+```bash
+# 全部（需 API）
+python -m pytest tests/ -v
+
+# 仅离线测试（无需 API）
+python -m pytest tests/ \
+  --ignore=tests/evaluators/test_semantic.py \
+  --ignore=tests/evaluators/test_judge.py \
+  --ignore=tests/test_quality_gate.py -v
+```
+
+---
+
+## 设计原则
+
+1. **不伪造数据** —— 指标不可用时记 `unavailable`，不填 0
+2. **不假装通过** —— 未覆盖的缺陷标 `xfail`，不标绿
+3. **失败必须可诊断** —— 门禁失败要说清哪、差多少、怎么修
+4. **解耦** —— 换 SUT 不改评测框架；换业务不改代码
+5. **诚实记录局限** —— 已知问题写进文档，不藏
