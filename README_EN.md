@@ -228,7 +228,7 @@ python -m pytest tests/ \
 ```
 eval/
 ├── schemas/         Dataset / EvalCase / GroundTruth / CaseResult / EvalReport
-├── datasets/        smoke(8) / full(19) / regression(16) / gold_set(30)
+├── datasets/        smoke(8) / full(29) / regression(16) / gold_set(30)
 ├── providers/       SUT 抽象 + RAGProvider + MockProvider(12 种故障注入)
 ├── evaluators/      faithfulness / correctness / semantic / judge / validation
 ├── quality_gate/    分层门禁 + 失败诊断

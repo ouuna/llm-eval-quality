@@ -460,12 +460,38 @@ SAMPLES: List[GoldSample] = [
 # ============================================================
 # 加载与保存
 # ============================================================
-def load_gold_set(path: str) -> List[GoldSample]:
-    """加载 Gold Set。文件不存在时返回内置模板"""
-    if os.path.exists(path):
+def load_gold_set(path: str) -> Optional[List[GoldSample]]:
+    """
+    加载 Gold Set。
+
+    文件不存在或解析失败时返回 None，并打印明确警告——
+    **不静默退回内置模板**。
+
+    为什么改掉静默兜底
+    ------------------
+    早先这里文件不存在时返回 SAMPLES。SAMPLES 是全部
+    reviewed=False 的自动预填模板，按设计不参与验证统计。
+    静默退回它，会让调用方误以为「验证过了」，
+    而实际上标注文件根本没被读到——这是循环论证之外的
+    又一层「假通过」。
+    """
+    if not os.path.exists(path):
+        import warnings
+        warnings.warn(
+            f"Gold Set 文件不存在：{path}。"
+            f"未返回内置模板——请确认标注文件路径，"
+            f"否则评测器指标不可用。", UserWarning)
+        return None
+
+    try:
         with open(path, "r", encoding="utf-8") as f:
             return [GoldSample.from_dict(d) for d in json.load(f)]
-    return list(SAMPLES)
+    except (OSError, ValueError, KeyError) as e:
+        import warnings
+        warnings.warn(
+            f"Gold Set 文件解析失败：{path}（{type(e).__name__}: {e}）。"
+            f"未返回内置模板。", UserWarning)
+        return None
 
 
 def save_gold_set(samples: List[GoldSample], path: str):

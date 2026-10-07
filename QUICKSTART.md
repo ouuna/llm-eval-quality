@@ -52,7 +52,7 @@ python -m eval list
 
 ```
 smoke     8 条    CI 快速回归集
-full      19 条   完整评测集，12 个类别
+full      29 条   完整评测集，12 个类别
 regression_bugs   16 条历史缺陷回归集
 ```
 

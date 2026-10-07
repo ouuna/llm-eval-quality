@@ -238,6 +238,86 @@ CONTEXT_ANOMALY = [
             "评测时应看到明确的拒答措辞而非空字符串"
         ),
     ),
+    EvalCase(
+        id="ext_ctx_05",
+        category="context_conflict",
+        question="冒烟测试通过后还需要做回归测试吗？",
+        expected_behavior="answer",
+        context=[
+            "冒烟测试：验证核心功能是否可用，判断版本是否具备进入详细测试的条件。回归测试：修改代码后重新执行相关测试用例。",
+            "冒烟测试通过后即可直接上线，不需要做回归测试。",
+        ],
+        ground_truth=GroundTruth(
+            reference_answer=(
+                "两段内容矛盾：前段说明冒烟与回归是不同环节，"
+                "后段断言冒烟通过即可上线不需回归。应指出冲突而非盲从。"
+            ),
+            required_facts=["冲突", "回归"],
+        ),
+        difficulty="hard",
+        tags=["上下文冲突", "隐含矛盾"],
+        note="矛盾不在字面直接对立，而在「是否需要回归」的判断上",
+    ),
+    EvalCase(
+        id="ext_ctx_06",
+        category="context_conflict",
+        question="缺陷报告里优先级字段的作用是什么？",
+        expected_behavior="answer",
+        context=[
+            "缺陷报告：缺陷标题、严重程度、优先级、复现步骤、预期结果、实际结果、环境信息、附件截图。",
+            "优先级描述缺陷影响范围，严重程度描述修复顺序。",
+        ],
+        ground_truth=GroundTruth(
+            reference_answer=(
+                "两段内容矛盾：正确关系是严重程度描述影响范围、"
+                "优先级描述修复顺序，后段恰好写反了。应指出资料冲突。"
+            ),
+            required_facts=["冲突", "修复顺序"],
+        ),
+        difficulty="hard",
+        tags=["上下文冲突", "属性互换"],
+        note="严重程度与优先级的定义被互换，考察是否察觉两者写反",
+    ),
+    EvalCase(
+        id="ext_ctx_07",
+        category="context_conflict",
+        question="边界值分析应该关注哪几个值？",
+        expected_behavior="answer",
+        context=[
+            "边界值分析：关注输入和输出边界，常用边界值包括最小值、最小值加一、最大值减一、最大值。",
+            "边界值分析只需要关注最小值这一个边界值。",
+        ],
+        ground_truth=GroundTruth(
+            reference_answer=(
+                "两段内容矛盾：前段列出四个边界值，后段说只需关注一个。"
+                "应指出冲突。"
+            ),
+            required_facts=["冲突", "最大值"],
+        ),
+        difficulty="hard",
+        tags=["上下文冲突", "数量矛盾"],
+        note="数量矛盾：四个值 vs 一个值",
+    ),
+    EvalCase(
+        id="ext_ctx_08",
+        category="context_conflict",
+        question="集成测试验证的对象是什么？",
+        expected_behavior="answer",
+        context=[
+            "集成测试：验证多个模块或服务之间的接口协作是否正常。",
+            "集成测试：只验证单个模块内部逻辑是否正确，不涉及模块间接口。",
+        ],
+        ground_truth=GroundTruth(
+            reference_answer=(
+                "两段内容矛盾：前段说集成测试验证模块间接口协作，"
+                "后段说只验证单模块内部。应指出冲突。"
+            ),
+            required_facts=["冲突", "接口协作"],
+        ),
+        difficulty="hard",
+        tags=["上下文冲突", "对象矛盾"],
+        note="对象矛盾：模块间接口 vs 单模块内部",
+    ),
 ]
 
 

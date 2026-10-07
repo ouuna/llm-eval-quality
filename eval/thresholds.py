@@ -92,7 +92,16 @@ DEFAULT_THRESHOLDS: Dict[str, float] = {
 
 
 # 指标说明。用于报告里展示「这个分数怎么算的」。
+#
+# 键名必须与 runner 产出的 metrics 键名一一对应：
+#   overall_pass_rate / hallucination_rate / refusal_accuracy /
+#   faithfulness / answer_correctness / completeness / relevance /
+#   retrieval_hit_rate / consistency / score_std / p95_latency_ms /
+#   error_rate / avg_cost
+# 键名对不上（如写成 correctness）会导致报告里 definition 恒为空。
 METRIC_DEFINITIONS: Dict[str, str] = {
+    "overall_pass_rate": "通过门禁的用例占全部有效用例（排除 error）的比例",
+    "answer_correctness": "关键事实的字符级覆盖率；未命中 forbidden 事实",
     "correctness": "关键事实的字符级覆盖率；未命中 forbidden 事实",
     "completeness": "required_facts 中被回答覆盖的比例",
     "relevance": "回答实词与问题/参考信息的重合度（分级判定）",
@@ -103,17 +112,30 @@ METRIC_DEFINITIONS: Dict[str, str] = {
     "consistency": "同一问题重复调用的内容 Jaccard 相似度均值",
     "score_std": "稳定性测试中各次得分的标准差",
     "p95_latency_ms": "单次调用延迟的 95 分位数",
+    "error_rate": "调用失败（超时、5xx、解析错误）的用例占全部用例的比例",
     "avg_cost": "单次调用的平均成本",
 }
 
 # 各指标的局限说明。写进报告是为了让读者不要过度解读数字。
+#
+# 与 METRIC_DEFINITIONS 一样，键名与 metrics 键名一一对应。
+# 需求明确要求「每个指标都要有算法说明和局限说明」，
+# 因此这里的键应覆盖全部 13 个指标，缺一个都要补。
 METRIC_CAVEATS: Dict[str, str] = {
+    "overall_pass_rate": "按用例计数而非按声明计数；分母排除了 error 用例",
+    "answer_correctness": "字符级匹配，同义改写可能低估；英文场景额外按词匹配",
     "correctness": "字符级匹配，同义改写可能低估；英文场景额外按词匹配",
     "completeness": "依赖 required_facts 标注质量，标注不全会误判为不完整",
     "relevance": "跑题检测依赖实词交集，问题与答案用词完全不同会误判",
     "faithfulness": "覆盖率算法无法识别「换一种说法表达同一错误」",
-    "consistency": "样本仅取前若干条 answer 类用例，不覆盖拒答类",
     "hallucination_rate": "按用例计数，不按声明计数；粒度较粗",
+    "refusal_accuracy": "依赖拒答标记词表，模型换个说法拒绝可能被判为未拒答",
+    "retrieval_hit_rate": "只判断是否非空，不判断召回片段是否相关（召回质量需另测）",
+    "consistency": "样本仅取前若干条 answer 类用例，不覆盖拒答类",
+    "score_std": "仅在有多次重复调用的稳定性测试中才有意义",
+    "p95_latency_ms": "受网络与模型服务负载影响，波动大；单次测量不可外推",
+    "error_rate": "区分「配置错误」「服务故障」「调用方式错误」需看错误明细",
+    "avg_cost": "仅当 API 返回用量信息时才有值；无信息时为 None",
 }
 
 

@@ -81,15 +81,15 @@ class TestNumbersMatchReality:
             "清单应写明测试收集数与通过数"
 
     def test_评测用例总数(self):
-        """74 条必须与实际一致"""
+        """评测用例总数必须与实际一致"""
         from eval.datasets import get_dataset
 
         total = sum(
             len(get_dataset(n).cases)
             for n in ("smoke", "full", "extended", "coverage"))
         text = _read()
-        assert f"74 条" in text, \
-            f"清单写的是 74 条，实际 {total} 条"
+        assert f"{total} 条" in text, \
+            f"清单写的是 {total} 条，实际 {total} 条"
 
     def test_零调用函数仍存在(self):
         """

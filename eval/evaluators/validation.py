@@ -30,7 +30,7 @@ import os
 
 from eval.evaluators.faithfulness import detect_hallucination
 from eval.schemas.result import Severity, ViolationType
-from eval.datasets.gold_set import GoldSample
+from eval.datasets.gold_set import GoldSample, load_gold_set
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))
@@ -398,6 +398,157 @@ def resolve_gold_samples(path: str = None) -> tuple:
     reviewers = {s.reviewed_by for s in samples if s.reviewed_by}
     who = "、".join(sorted(reviewers)) if reviewers else "未署名"
     return samples, f"{target}（复核者：{who}）"
+
+
+# ============================================================
+# 标注一致性（Inter-Annotator Agreement, IAA）
+# ============================================================
+def cohens_kappa(labels_a: List[Any], labels_b: List[Any]) -> Dict[str, Any]:
+    """
+    Cohen's Kappa —— 两位标注者的一致性指标。
+
+    为什么用 Kappa 而不是一致率
+    ---------------------------
+    一致率（agreement）有致命缺陷：如果两个人都"随便标 true"，
+    在正样本占 90% 的数据上一致率也能高达 90%，
+    但这个一致毫无信息量。Kappa 扣除了"碰巧一致"的部分，
+    所以基线准确率高的场景下 Kappa 才有意义。
+
+    返回字段
+    --------
+    kappa          Kappa 值，0~1。无法计算时（见 reason）为 None
+    agreement      观察一致率，作为对照
+    n              参与计算的样本对数
+    reason         无法计算 Kappa 时的原因（正常计算时为空字符串）
+    """
+    if len(labels_a) != len(labels_b):
+        return {
+            "kappa": None, "agreement": None, "n": 0,
+            "reason": "两标注者样本数不一致，无法配对计算",
+        }
+
+    n = len(labels_a)
+    if n == 0:
+        return {
+            "kappa": None, "agreement": None, "n": 0,
+            "reason": "空输入，无样本可计算",
+        }
+
+    # 单类别输入：所有标注完全相同，一致率=1 但 Kappa 无定义（分母为0）
+    # ——这是 Kappa 的经典"悖论"，必须显式说明而非抛 ZeroDivisionError
+    unique = sorted(set(labels_a) | set(labels_b))
+    if len(unique) < 2:
+        return {
+            "kappa": None, "agreement": 1.0, "n": n,
+            "reason": "单类别输入（所有标注一致），Kappa 无定义（分母为零）",
+        }
+
+    # 观察一致率
+    agree = sum(1 for a, b in zip(labels_a, labels_b) if a == b)
+    p_o = agree / n
+
+    # 期望一致率（各标注者各类别的边缘分布之积求和）
+    p_e = 0.0
+    for cat in unique:
+        pa = labels_a.count(cat) / n
+        pb = labels_b.count(cat) / n
+        p_e += pa * pb
+
+    if p_e == 1.0:
+        # 理论期望一致率=1 时 Kappa 无定义
+        return {
+            "kappa": None, "agreement": round(p_o, 4), "n": n,
+            "reason": "期望一致率已达 1.0，Kappa 无定义",
+        }
+
+    kappa = (p_o - p_e) / (1.0 - p_e)
+    return {
+        "kappa": round(kappa, 4),
+        "agreement": round(p_o, 4),
+        "n": n,
+        "reason": "",
+    }
+
+
+def compare_annotations(path_a: str, path_b: str) -> Dict[str, Any]:
+    """
+    对比两位标注者的 Gold Set 标注文件，输出差异清单。
+
+    用途：解决 Gold Set 循环论证（P0-2）的关键工具——
+    有了第二位标注者的独立结果，才能计算一致性、
+    发现"评测器规则是否为这批样本量身定制"。
+
+    返回字段
+    --------
+    status           ok / error（某个文件读不到时）
+    total_a / total_b 两个文件的样本数
+    agreed           一致数
+    disagreed        不一致数
+    kappa            基于 label_hallucination 的 Cohen's Kappa
+    differences      不一致样本明细（题目、两个标签、各自理由）
+    error            出错原因（status=error 时）
+    """
+    samples_a = load_gold_set(path_a)
+    samples_b = load_gold_set(path_b)
+
+    if samples_a is None or samples_b is None:
+        missing = []
+        if samples_a is None:
+            missing.append(path_a)
+        if samples_b is None:
+            missing.append(path_b)
+        return {
+            "status": "error",
+            "error": f"标注文件读不到或解析失败：{'、'.join(missing)}",
+            "total_a": 0, "total_b": 0,
+            "agreed": 0, "disagreed": 0,
+            "kappa": None,
+            "differences": [],
+        }
+
+    map_a = {s.id: s for s in samples_a}
+    map_b = {s.id: s for s in samples_b}
+
+    common_ids = [sid for sid in map_a if sid in map_b]
+
+    differences = []
+    labels_a, labels_b = [], []
+    for sid in common_ids:
+        sa, sb = map_a[sid], map_b[sid]
+        a_label = sa.label_hallucination
+        b_label = sb.label_hallucination
+        labels_a.append(a_label)
+        labels_b.append(b_label)
+
+        if a_label != b_label:
+            differences.append({
+                "id": sid,
+                "question": sa.question,
+                "label_a": a_label,
+                "label_b": b_label,
+                "note_a": sa.note,
+                "note_b": sb.note,
+            })
+
+    agreed = len(common_ids) - len(differences)
+
+    # 只对双方都给了标签的样本算 Kappa（None 表示未标注，跳过）
+    paired_a, paired_b = [], []
+    for a, b in zip(labels_a, labels_b):
+        if a is not None and b is not None:
+            paired_a.append(a)
+            paired_b.append(b)
+    kappa = cohens_kappa(paired_a, paired_b)
+
+    return {
+        "status": "ok",
+        "total_a": len(samples_a),
+        "total_b": len(samples_b),
+        "agreed": agreed,
+        "disagreed": len(differences),
+        "kappa": kappa,
+        "differences": differences,
+    }
 
 
 if __name__ == "__main__":

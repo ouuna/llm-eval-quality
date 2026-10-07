@@ -79,6 +79,59 @@ CASES = [
             required_facts=["核心功能", "修改代码", "重新执行"],
         ),
     ),
+    EvalCase(
+        id="full_hop_02", category="multi_hop",
+        question="一个缺陷严重程度高但优先级低，应该先修哪个、依据是什么？",
+        expected_behavior="answer", difficulty="hard", tags=["多跳", "需区分两个概念"],
+        ground_truth=GroundTruth(
+            reference_answer="按优先级排序先修优先级高的；严重程度描述影响范围，与修复顺序无关，二者独立。",
+            required_facts=["优先级", "修复顺序", "独立"],
+            forbidden_facts=["严重程度决定修复顺序"],
+        ),
+        note="需同时用到「严重程度与优先级二者独立」和「优先级=修复顺序」两处信息",
+    ),
+    EvalCase(
+        id="full_hop_03", category="multi_hop",
+        question="自动化测试框架中，测试数据应该放在哪一层？",
+        expected_behavior="answer", difficulty="medium", tags=["多跳", "信息抽取"],
+        ground_truth=GroundTruth(
+            reference_answer="数据层。",
+            required_facts=["数据层"],
+            forbidden_facts=["基础层", "用例层"],
+        ),
+        note="需把「测试数据」映射到「数据层」这个具体层名",
+    ),
+    EvalCase(
+        id="full_hop_04", category="multi_hop",
+        question="单元测试和集成测试分别由谁编写、验证什么？",
+        expected_behavior="answer", difficulty="hard", tags=["多跳", "对比"],
+        ground_truth=GroundTruth(
+            reference_answer="单元测试由开发人员编写，验证最小可测试单元；集成测试验证多个模块或服务之间的接口协作。",
+            required_facts=["开发人员", "最小可测试单元", "接口协作"],
+        ),
+        note="需综合单元测试与集成测试两处信息，且不能混淆两者归属",
+    ),
+    EvalCase(
+        id="full_hop_05", category="multi_hop",
+        question="提交代码后，持续集成和回归测试分别做什么？",
+        expected_behavior="answer", difficulty="hard", tags=["多跳", "流程串联"],
+        ground_truth=GroundTruth(
+            reference_answer="持续集成在代码提交后自动触发构建和测试以尽早发现问题；回归测试在修改代码后重新执行相关用例确认没有引入新缺陷。",
+            required_facts=["自动触发", "构建", "新缺陷"],
+        ),
+        note="两者都涉及「提交/修改代码后」，需区分各自职责",
+    ),
+    EvalCase(
+        id="full_hop_06", category="multi_hop",
+        question="边界值分析与等价类划分在关注点上有什么不同？",
+        expected_behavior="answer", difficulty="hard", tags=["多跳", "对比"],
+        ground_truth=GroundTruth(
+            reference_answer="等价类划分关注输入域的划分（子集内预期结果相同）；边界值分析关注输入和输出的边界取值。",
+            required_facts=["互不相交", "边界"],
+            forbidden_facts=["等价类关注边界", "边界值关注划分"],
+        ),
+        note="两者的划分依据不同，答反即为错误",
+    ),
 
     # ==========================================================
     # 3. negative —— 否定式提问（易答反）
@@ -215,6 +268,81 @@ CASES = [
             evidence=["两条上下文对冒烟测试的定位互相矛盾"],
         ),
         note="框架应注入冲突上下文，观察模型是否识别而非盲选",
+    ),
+    EvalCase(
+        id="full_cfc_02", category="context_conflict",
+        question="严重程度和优先级有什么关系？",
+        expected_behavior="answer", difficulty="hard", tags=["冲突"],
+        context=[
+            "严重程度描述缺陷影响范围，优先级描述修复顺序，二者独立。",
+            "严重程度和优先级是同一个概念，可以互相替代。",
+        ],
+        ground_truth=GroundTruth(
+            reference_answer="两段内容矛盾：前段说二者独立，后段说是同一概念。应指出资料存在矛盾，而不是直接选一个。",
+            required_facts=["独立", "矛盾"],
+            forbidden_facts=["同一个概念", "互相替代"],
+        ),
+        note="两段直接互相否定，考察是否识别冲突而非盲选",
+    ),
+    EvalCase(
+        id="full_cfc_03", category="context_conflict",
+        question="回归测试的目的是什么？",
+        expected_behavior="answer", difficulty="hard", tags=["冲突"],
+        context=[
+            "回归测试：修改代码后重新执行相关测试用例，确认没有引入新缺陷。",
+            "回归测试：只需要重新编译一遍代码，不需要执行任何测试用例。",
+        ],
+        ground_truth=GroundTruth(
+            reference_answer="两段对回归测试的定义互相矛盾：一段说要重新执行用例，另一段说不需执行。应指出冲突。",
+            required_facts=["冲突", "重新执行"],
+            forbidden_facts=["不需要执行"],
+        ),
+        note="一段明确否定另一段的核心动作，观察模型是否盲选其一",
+    ),
+    EvalCase(
+        id="full_cfc_04", category="context_conflict",
+        question="单元测试应该由谁来写？",
+        expected_behavior="answer", difficulty="hard", tags=["冲突"],
+        context=[
+            "单元测试：针对最小可测试单元进行验证，通常由开发人员编写。",
+            "单元测试：只能由专职测试人员编写，开发人员不允许编写。",
+        ],
+        ground_truth=GroundTruth(
+            reference_answer="两段对单元测试由谁编写存在矛盾：一段说通常由开发人员编写，另一段说只能由测试人员编写。应指出冲突。",
+            required_facts=["冲突", "开发人员"],
+            forbidden_facts=["只能由测试人员"],
+        ),
+        note="「通常由」vs「只能由」的限定强度冲突，更隐蔽",
+    ),
+    EvalCase(
+        id="full_cfc_05", category="context_conflict",
+        question="接口测试需要验证哪些内容？",
+        expected_behavior="answer", difficulty="hard", tags=["冲突"],
+        context=[
+            "接口测试：对系统间接口的请求参数、响应字段、状态码、异常场景进行验证。",
+            "接口测试：只需要检查接口能否返回 200，其他都不需要验证。",
+        ],
+        ground_truth=GroundTruth(
+            reference_answer="两段对接口测试的覆盖范围矛盾：一段列出多项验证内容，另一段说只需检查返回码。应指出冲突。",
+            required_facts=["冲突", "请求参数"],
+            forbidden_facts=["只需要检查"],
+        ),
+        note="范围冲突：全面验证 vs 仅验证可连通",
+    ),
+    EvalCase(
+        id="full_cfc_06", category="context_conflict",
+        question="等价类划分的子集之间应该满足什么关系？",
+        expected_behavior="answer", difficulty="hard", tags=["冲突"],
+        context=[
+            "等价类划分：把输入域划分为若干互不相交的子集。",
+            "等价类划分：各子集之间可以相互重叠，允许同一个输入属于多个等价类。",
+        ],
+        ground_truth=GroundTruth(
+            reference_answer="两段对子集关系矛盾：一段说互不相交，另一段说可以重叠。应指出冲突。",
+            required_facts=["冲突", "互不相交"],
+            forbidden_facts=["相互重叠"],
+        ),
+        note="「互不相交」vs「可以重叠」的直接矛盾",
     ),
 
     # ==========================================================

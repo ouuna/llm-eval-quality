@@ -184,6 +184,12 @@ def _extract_keywords(question):
 
     最初实现按单字匹配，中文场景下命中率极低（单字不构成语义边界），
     改为按语义完整词组切分并按词长加权，召回率显著提升。
+
+    中文提问通常没有空格，因此除了按标点切分，
+    这里再对每个长段做**字符 bigram 抽取**（见 _to_bigrams），
+    由 retrieve 的打分阶段用 bigram 重合度兜底——
+    这样「提交代码后」与文档里的「代码提交」也能产生重合，
+    不再因为整词 count 不到而整段召回为空。
     """
     # 先去掉标点，保留中文、英文、数字
     cleaned = re.sub(r"[，。？?！!、；;：:\s]+", " ", question)
@@ -204,27 +210,70 @@ def _extract_keywords(question):
     return keywords
 
 
+def _to_bigrams(s: str):
+    """返回字符串的字符 bigram 集合（含中文与英文数字）"""
+    if len(s) < 2:
+        return {s}
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
 def retrieve(question, docs, top_k=None):
     """
-    检索：词组 + 同义词扩展 + 词长加权打分
+    检索：词组 + 同义词扩展 + 词长加权 + 字符 bigram 兜底
+
+    打分改进
+    --------
+    早先的同义词扩展用 `key in kw or kw in key` 做子串匹配，
+    「测试」这种通用词会命中「测试用例 / 冒烟测试 / 回归测试 /
+    接口测试 / 单元测试 / 集成测试」所有 key，把别名全部展开，
+    导致通用词权重爆炸、有区分度的词反而被淹没。
+
+    现在：
+    1. 同义词只在 keyword 与 key **完全相等**时才展开别名；
+    2. 主题名（知识库每段冒号前的名字）作为高权重整词命中；
+    3. 字符 bigram 重合度兜底——中文提问无空格时，
+       整词 count 不到也能靠相邻字符的重合命中相关文档。
     """
     if top_k is None:
         top_k = TOP_K
 
     keywords = _extract_keywords(question)
 
-    # 扩展检索词：加入同义词，提升召回
+    # 扩展检索词：只在精确命中 key 时展开别名，避免通用词爆炸
     expanded = list(keywords)
     for kw in keywords:
-        for key, aliases in SYNONYMS.items():
-            if key in kw or kw in key:
-                expanded.extend(aliases)
+        if kw in SYNONYMS:
+            expanded.extend(SYNONYMS[kw])
 
-    expanded = list(set(expanded))
+    expanded = list(dict.fromkeys(expanded))  # 去重且保序
+
+    # 问题的字符 bigram 集合，用于兜底匹配
+    q_bigrams = set()
+    for kw in keywords:
+        q_bigrams |= _to_bigrams(kw)
+
+    # 主题名集合：文档里冒号前的名字（如「冒烟测试」）
+    topics = {d.split("：", 1)[0] for d in docs if "：" in d}
 
     scored = []
     for doc in docs:
-        score = sum(doc.count(k) * len(k) for k in expanded)
+        topic = doc.split("：", 1)[0] if "：" in doc else ""
+        score = 0.0
+        for k in expanded:
+            n = doc.count(k)
+            if n == 0:
+                continue
+            # 主题名命中：权重更高（它直接标识了文档主题）
+            if k == topic or (topic and k in topic):
+                score += n * len(k) * 3.0
+            else:
+                score += n * len(k)
+
+        # bigram 兜底：与问题字符重合的相邻字符对越多，越相关
+        if q_bigrams:
+            overlap = len(q_bigrams & _to_bigrams(doc))
+            score += overlap * 0.5
+
         scored.append((score, doc))
 
     scored.sort(key=lambda x: x[0], reverse=True)
