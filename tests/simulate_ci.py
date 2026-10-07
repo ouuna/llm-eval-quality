@@ -35,6 +35,7 @@ tests/test_cli_baseline.py 的 7 项测试：
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -46,13 +47,28 @@ def _isolate_env():
     """
     返回 (env_dict, temp_path)，其中 env_dict 不含任何 API 配置。
 
-    做法是把 ENV_FILE 指向一个空文件，并清掉全部相关环境变量——
-    与tests/conftest.py 的 no_api_config fixture 同一套思路。
+    两种屏蔽方式都要做，缺一不可
+    --------------------------
+    1. **清掉环境变量** —— os.environ 里的 EVAL_* / OPENAI_*
+    2. **把 .env 临时挪走** —— 这是最关键的一步
+
+    为什么第2 步不可省
+    -----------------
+    `eval/env_loader.py` 里：
+        ENV_FILE = os.path.join(PROJECT_ROOT, ".env")   # 模块级常量
+        def load_env_file(path=None):
+            target = path or ENV_FILE                # 只认这个常量
+
+    它**不读**环境变量 ENV_FILE。
+    早先我只设了环境变量 ENV_FILE，看着像屏蔽了，
+    实际上 .env 照读不误——本地因为有 .env 所以"通过"，
+    CI 上没有 .env 才暴露这是无效的。
+
+    所以只能真的把文件挪走。
+    注意要确保无论测试是否崩溃都能挪回来，
+    否则用户会丢配置——那比测试失败严重得多。
     """
     tmp = tempfile.mkdtemp(prefix="simulate_ci_")
-    empty_env = os.path.join(tmp, "empty.env")
-    with open(empty_env, "w", encoding="utf-8") as f:
-        f.write("")
 
     env = dict(os.environ)
     for name in (
@@ -63,8 +79,14 @@ def _isolate_env():
     ):
         env.pop(name, None)
 
-    env["ENV_FILE"] = empty_env
-    return env, tmp
+    # 关键：把真实的 .env 挪到临时目录
+    real_env = os.path.join(PROJECT_ROOT, ".env")
+    moved_to = None
+    if os.path.exists(real_env):
+        moved_to = os.path.join(tmp, "real.env")
+        shutil.move(real_env, moved_to)
+
+    return env, tmp, moved_to
 
 
 def main(argv=None):
@@ -78,7 +100,7 @@ def main(argv=None):
     print("做法：屏蔽全部 API 配置（等价于 CI 上没有 .env）。")
     print()
 
-    env, tmp = _isolate_env()
+    env, tmp, moved_to = _isolate_env()
 
     cmd = [sys.executable, "-m", "pytest", "tests/",
            "-q", "--tb=short", "-p", "no:cacheprovider"]
@@ -86,21 +108,40 @@ def main(argv=None):
         cmd += argv
 
     print(f"执行：{' '.join(cmd[1:])}")
-    print(f"环境：ENV_FILE={env['ENV_FILE']}（空文件）")
-    print("-" * 66)
+    if moved_to:
+        print("环境：.env 已临时挪走 + 环境变量已清空（等价 CI）")
+    else:
+        print("环境：未找到 .env（本身就是 CI 条件），"
+              "已清空全部环境变量")
 
+    # 用 try/finally 保证 .env 一定被挪回去。
+    #
+    # 这是整个工具里最不能出错的地方——
+    # 一旦 .env 丢了，用户下次跑真实评测就没法用了，
+    # 那比测试失败严重得多。
     try:
-        r = subprocess.run(cmd, cwd=PROJECT_ROOT, env=env,
-                           capture_output=True, text=True, timeout=900)
-    except subprocess.TimeoutExpired:
-        print("超时")
-        return 2
+        print("-" * 66)
+        try:
+            r = subprocess.run(cmd, cwd=PROJECT_ROOT, env=env,
+                               capture_output=True, text=True, timeout=900)
+        except subprocess.TimeoutExpired:
+            print("超时")
+            return 2
     finally:
+        if moved_to:
+            try:
+                shutil.move(moved_to, os.path.join(PROJECT_ROOT, ".env"))
+                print("（.env 已恢复）")
+            except (OSError, shutil.Error) as e:
+                print("=" * 66)
+                print(f"严重错误：.env 恢复失败！{e}")
+                print(f"你的配置文件在：{moved_to}")
+                print("请手动把它挪回项目根目录并重命名为 .env")
+                print("=" * 66)
+                return 3
         # 清理临时目录
         try:
-            if os.path.exists(os.path.join(tmp, "empty.env")):
-                os.remove(os.path.join(tmp, "empty.env"))
-            os.rmdir(tmp)
+            shutil.rmtree(tmp, ignore_errors=True)
         except OSError:
             pass
 

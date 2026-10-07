@@ -14,11 +14,25 @@ README 里的数字却没人改。
 数字变了而测试没改 → 测试失败，提示该更新 README。
 """
 
+import os
 import re
+from pathlib import Path
 
 import pytest
 
-README = "README.md"
+# 路径必须基于**本文件位置**推出，而不是工作目录。
+#
+# 真实踩过的坑
+# ------------
+# 早先写的是 `README = "README.md"`，依赖「pytest 从项目根运行」。
+# 但只要换个工作目录（`cd /tmp && pytest /path/to/tests/`），
+# 20 个测试全部失败，报的是 FileNotFoundError——
+# 与被测的「README 内容是否诚实」毫无关系。
+#
+# 这类假失败会消耗排查时间，还可能让人误以为
+# README 真的写错了什么。所以路径一律锚定到 __file__。
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+README = os.path.join(_PROJECT_ROOT, "README.md")
 
 
 def _read():
@@ -46,8 +60,8 @@ class TestNumbersMatchReality:
 
     def test_接口测试数量(self):
         """tests/api/ 的实际用例数"""
-        from pathlib import Path
-        n = len(list(Path("tests/api").glob("test_*.py")))
+        n = len(list((Path(_PROJECT_ROOT) / "tests" / "api")
+                     .glob("test_*.py")))
         assert n > 0, "找不到接口测试文件"
 
     def test_变异检出率与实测一致(self):
@@ -76,11 +90,10 @@ class TestNumbersMatchReality:
 
     def test_测试数量级正确(self):
         """README 不应声称一个明显偏高的测试数"""
-        from pathlib import Path
-
+        
         text = _read()
         # 至少要有 400 项（实际 500+）
-        n = sum(1 for _ in Path("tests").rglob("test_*.py"))
+        n = sum(1 for _ in (Path(_PROJECT_ROOT) / "tests").rglob("test_*.py"))
         assert n >= 5, "测试文件太少，README 的规模描述可能过时的反向"
 
     def test_GoldSet指标与实测一致(self):

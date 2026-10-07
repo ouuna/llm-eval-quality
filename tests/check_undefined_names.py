@@ -36,6 +36,10 @@ import subprocess
 import sys
 from typing import List
 
+# 项目根：所有相对路径都以它为基准，
+# 否则换个工作目录运行就会「扫不到文件 → 假通过」。
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 from tests.undefined_names_core import find_undefined
 
 # 批量模式的子进程脚本。
@@ -97,18 +101,29 @@ def check_source(src: str, path: str = "<test>") -> List[UndefinedName]:
 
 
 def collect_py_files(paths: List[str]) -> List[str]:
+    """
+    收集待检查的 .py 文件。
+
+    相对路径按**项目根**解析，不按当前工作目录。
+    早先直接用 os.walk(paths)，于是 `cd /tmp && python -m
+    tests.check_undefined_names` 会扫不到任何文件、
+    报告「检查通过」——又是一个「假通过」。
+    """
     files: List[str] = []
     for p in paths:
-        if os.path.isdir(p):
-            for root, dirs, fs in os.walk(p):
+        # 把相对路径锚定到项目根
+        abs_p = p if os.path.isabs(p) else os.path.join(PROJECT_ROOT, p)
+
+        if os.path.isdir(abs_p):
+            for root, dirs, fs in os.walk(abs_p):
                 if any(x in root for x in
                        ("__pycache__", ".git", ".workbuddy")):
                     continue
                 for f in fs:
                     if f.endswith(".py"):
                         files.append(os.path.join(root, f))
-        elif p.endswith(".py"):
-            files.append(p)
+        elif abs_p.endswith(".py"):
+            files.append(abs_p)
     return files
 
 

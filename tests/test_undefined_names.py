@@ -137,9 +137,18 @@ class TestProjectClean:
         回归测试：确保本次修的 bug 没有复发。
 
         faithfulness.py 曾因缺 Dict 导入导致 CI 挂掉。
+
+        路径基于 __file__ 推出，不能用相对路径——
+        换个工作目录就找不到文件，报FileNotFoundError，
+        与被测的「导入是否完整」毫无关系。
         """
-        with open("eval/evaluators/faithfulness.py",
-                  encoding="utf-8") as f:
+        import os
+
+        target = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "eval", "evaluators", "faithfulness.py")
+
+        with open(target, encoding="utf-8") as f:
             lines = f.readlines()
 
         typing_line = next(
