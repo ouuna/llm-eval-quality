@@ -14,6 +14,9 @@ env/
 .vscode/
 *.swp
 
+# 工具数据（本地工作区辅助，不进仓库）
+.workbuddy/
+
 # 敏感信息 —— 严禁提交
 .env
 .env.*
@@ -26,6 +29,7 @@ config_local.yaml
 reports/*.json
 reports/*.csv
 reports/*.log
+reports/*.html
 logs/
 *.log
 

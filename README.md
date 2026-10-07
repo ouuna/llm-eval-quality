@@ -131,6 +131,8 @@ python -m eval run --dataset smoke --mock
 python -m eval run --dataset smoke
 ```
 
+> 更详细的逐步验证与故障排查，见 [`docs/验证指南.md`](docs/验证指南.md)。
+
 ---
 
 ## 幻觉是怎么判定的

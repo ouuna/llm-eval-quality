@@ -99,19 +99,20 @@ start reports\report.html
 ## 第 6 步：跑离线测试
 
 ```cmd
-python -m pytest tests/ --ignore=tests/evaluators/test_semantic.py --ignore=tests/evaluators/test_judge.py --ignore=tests/test_quality_gate.py -q
+python -m pytest tests/ -q
 ```
 
-**应该看到 250 项左右通过**，其中：
+**应该看到 600 项左右通过**：
 ```
-253 passed, 1 skipped, 9 xfailed in 7.02s
+621 passed, 2 skipped, 9 xfailed in ~30s
 ```
 
-> 完整测试（含需 API 的语义与 Judge 评测）是 347 项。
-> 离线子集不含 `test_semantic.py` / `test_judge.py` / `test_quality_gate.py`
-> 这三个文件，所以是 253 项。
+> 需要 API 的 `live` 与 `perf` 测试已由 `pytest.ini` 的 marker 自动过滤，
+> 无需手动排除。
 
 > `xfailed` 是正常的 —— 那是明确标记「这 9 条不由声明级验证覆盖」，不做虚假覆盖。
+
+> 更完整的验证与故障排查见 [`docs/验证指南.md`](docs/验证指南.md)。
 
 ---
 
