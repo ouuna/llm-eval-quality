@@ -26,8 +26,12 @@ PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))
 WORKFLOW_DIR = os.path.join(PROJECT_ROOT, ".github", "workflows")
 
-# 兼容旧引用（tests/test_check_workflow.py 等）
-WORKFLOW_PATH = os.path.join(WORKFLOW_DIR, "eval.yml")
+# 默认 workflow 路径（保留兼容旧引用）。
+#
+# 实际检查走 all_workflow_paths()—— 它扫描整个目录。
+# 早先这里硬编码 eval.yml，于是 CI 拆成test/evaluation/regression
+# 之后，那个文件被删除，检查器直接指向不存在的路径。
+WORKFLOW_PATH = os.path.join(WORKFLOW_DIR, "evaluation.yml")
 
 
 def all_workflow_paths():

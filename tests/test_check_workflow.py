@@ -22,8 +22,28 @@ from tests.check_workflow import (
 
 @pytest.fixture
 def real_workflow_text():
-    with open(WORKFLOW_PATH, "r", encoding="utf-8") as f:
-        return f.read()
+    """
+    用于「往里注入错误」的真实 workflow 内容。
+
+    这里**拼接全部 workflow**，而不是读单个文件。
+    原因：早先读的是 eval.yml，它在 CI 拆分为
+    test/evaluation/regression 三个时已被删除——
+    于是下面几处 `real_workflow_text.replace(...)`
+    的替换目标全部不存在，测试静默失效，
+    而报错信息完全看不出是 fixture 没内容。
+    """
+    chunks = []
+    for p in all_workflow_paths():
+        with open(p, "r", encoding="utf-8") as f:
+            chunks.append(f.read())
+    return "\n".join(chunks)
+
+
+# 合并后的内容里，跨文件保证存在的三段字符串。
+# 用它替代对某个具体文件的依赖。
+NEEDS_ANCHOR = "needs: workflow-lint"
+SECRETS_ANCHOR = "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}"
+CONCURRENCY_ANCHOR = "${{ github.ref }}"
 
 
 def _write(tmp_path, text, name="eval.yml"):
@@ -36,15 +56,43 @@ class TestRealFile:
 
     def test_仓库中的_workflow_无语法问题(self):
         """这个断言就是防止 Phase 13 那个错误再次发生"""
-        issues = check_workflow(WORKFLOW_PATH)
-        assert not issues, "\n".join(str(i) for i in issues)
+        # 全部 workflow 都要检查，不能只看一个文件
+        for path in all_workflow_paths():
+            issues = check_workflow(path)
+            assert not issues, (
+                f"{os.path.basename(path)}: "
+                + "; ".join(str(i) for i in issues))
 
-    def test_五个_job_都存在且有_runs_on(self, real_workflow_text):
-        for job in ("workflow-lint", "unit-tests", "offline-eval",
-                    "evaluator-validation", "evaluation"):
-            assert f"\n  {job}:" in real_workflow_text, f"缺少 job：{job}"
-        assert real_workflow_text.count("runs-on:") == 5, (
-            f"应有 5 个 runs-on，实际 {real_workflow_text.count('runs-on:')}")
+    def test_离线job都在_test_yml里(self, real_workflow_text):
+        """
+        离线检查集中在 test.yml，需要 API 的在 evaluation.yml。
+
+        早先 eval.yml 与 evaluation.yml 并存，
+        同样的 job 在两处各有一份——
+        修一份漏一份，然后花半小时 debug「明明改了怎么没生效」。
+
+        所以这里按**职责**断言，而不是按「有几个 job」。
+        """
+        for job in ("workflow-lint", "unit-tests", "api-tests",
+                    "negative-tests", "perf-tests",
+                    "offline-eval", "evaluator-validation"):
+            assert f"\n  {job}:" in real_workflow_text, \
+                f"缺少离线 job：{job}"
+
+    def test_旧的eval_yml已删除(self):
+        """
+        重复的 workflow 必须删掉。
+
+        它与 evaluation.yml 职责重复，会导致：
+          · 同一个问题在两处各报一次
+          · 修一份漏一份
+        """
+        import os
+        d = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            ".github", "workflows")
+        assert not os.path.exists(os.path.join(d, "eval.yml")), \
+            "旧 eval.yml 还在，与 evaluation.yml 职责重复"
 
     def test_api_job有密钥守卫(self, real_workflow_text):
         """
@@ -77,31 +125,40 @@ class TestRealFile:
         assert first_job.group(1) == "workflow-lint", (
             f"第一个 job 应为 workflow-lint，实际是 {first_job.group(1)}")
 
-    def test_其余job都依赖前置检查(self, real_workflow_text):
-        """除 workflow-lint 外，每个 job 都必须有 needs，否则绕过检查"""
-        jobs_section = real_workflow_text.split("jobs:", 1)[1]
+    def test_每个job都依赖前置检查(self):
+        """
+        每个 workflow 里，除 workflow-lint 外，
+        每个 job 都必须有 needs，否则会绕过检查。
+        """
+        for path in all_workflow_paths():
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
 
-        blocks = {}
-        current = None
-        for line in jobs_section.splitlines():
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            indent = len(line) - len(line.lstrip())
-            if indent < 2:
-                break
-            if indent == 2 and line.rstrip().endswith(":"):
-                current = line.strip().rstrip(":")
-                blocks[current] = []
-            elif current:
-                blocks[current].append(line.strip())
+            assert "\njobs:" in text, f"{path} 没有 jobs 段"
+            jobs_section = text.split("\njobs:", 1)[1]
 
-        assert len(blocks) == 5, f"应有 5 个 job，实际 {len(blocks)}：{list(blocks)}"
+            blocks = {}
+            current = None
+            for line in jobs_section.splitlines():
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                indent = len(line) - len(line.lstrip())
+                if indent < 2:
+                    break
+                if indent == 2 and line.rstrip().endswith(":"):
+                    current = line.strip().rstrip(":")
+                    blocks[current] = []
+                elif current:
+                    blocks[current].append(line.strip())
 
-        for name, lines in blocks.items():
-            if name == "workflow-lint":
-                continue
-            assert any(l.startswith("needs:") for l in lines), (
-                f"job '{name}' 没有 needs，会绕过 workflow-lint")
+            assert blocks, f"{path} 解析不到任何 job"
+
+            for name, lines in blocks.items():
+                if name == "workflow-lint":
+                    continue
+                assert any(l.startswith("needs:") for l in lines), (
+                    f"{path} 的 job '{name}' 没有 needs，"
+                    f"会绕过 workflow-lint")
 
 
 class TestDetectsErrors:
@@ -121,8 +178,8 @@ class TestDetectsErrors:
         因此 secrets 在该位置**任何形态都不可用**。
         """
         broken = real_workflow_text.replace(
-            "needs: [ unit-tests, offline-eval ]",
-            "needs: [ unit-tests, offline-eval ]\n"
+            NEEDS_ANCHOR,
+            NEEDS_ANCHOR + "\n"
             "    if: secrets.OPENAI_API_KEY != ''")
         issues = check_workflow(_write(tmp_path, broken))
 
@@ -135,8 +192,8 @@ class TestDetectsErrors:
     def test_抓出job级if_包裹形态中的secrets(self, tmp_path, real_workflow_text):
         """历史错误 1：表达式包裹形态"""
         broken = real_workflow_text.replace(
-            "needs: [ unit-tests, offline-eval ]",
-            "needs: [ unit-tests, offline-eval ]\n"
+            NEEDS_ANCHOR,
+            NEEDS_ANCHOR + "\n"
             "    if: ${{ secrets.OPENAI_API_KEY != '' }}")
         issues = check_workflow(_write(tmp_path, broken))
         assert issues, "!!! 没抓到包裹形态的 secrets 引用"
@@ -185,7 +242,7 @@ class TestDetectsErrors:
         GitHub 解析注释里的表达式，与代码同等对待。
         """
         broken = real_workflow_text.replace(
-            "# 所以「无密钥则跳过」的逻辑放在 step 级（见下方密钥检查 step），",
+            SECRETS_ANCHOR,
             "# 反例：${{ secrets.OPENAI_API_KEY }}")
         issues = check_workflow(_write(tmp_path, broken))
 
@@ -195,7 +252,7 @@ class TestDetectsErrors:
     def test_抓出注释中的steps表达式(self, tmp_path, real_workflow_text):
         """注释里引用 steps 同样非法"""
         broken = real_workflow_text.replace(
-            "# 所以「无密钥则跳过」的逻辑放在 step 级（见下方密钥检查 step），",
+            SECRETS_ANCHOR,
             "# 详见 ${{ steps.ds.outputs.value }}")
         issues = check_workflow(_write(tmp_path, broken))
         assert any("注释" in str(i) for i in issues)
@@ -206,12 +263,14 @@ class TestDetectsErrors:
 
         一个见什么都报的检查器等于没检查器。
         """
-        assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in real_workflow_text
-        assert check_workflow(WORKFLOW_PATH) == []
+        assert SECRETS_ANCHOR in real_workflow_text
+        for p in all_workflow_paths():
+            assert check_workflow(p) == [], p
 
     def test_concurrency用github是合法的(self, real_workflow_text):
-        assert "eval-${{ github.ref }}" in real_workflow_text
-        assert check_workflow(WORKFLOW_PATH) == []
+        assert CONCURRENCY_ANCHOR in real_workflow_text
+        for p in all_workflow_paths():
+            assert check_workflow(p) == [], p
 
     def test_所有secrets引用都在合法位置(self, real_workflow_text):
         """
@@ -367,9 +426,9 @@ jobs:
                             "OPENAI_BASE_URL", "OPENAI_MODEL_NAME"), \
                 f"secrets 被映射到了程序不认识的名字：{name}"
 
-        assert "EVAL_API_KEY: ${{ secrets.OPENAI_API_KEY }}" \
-            in real_workflow_text, \
-            "secrets 应映射到程序真正读取的变量名"
+        # secrets 必须映射到程序真正读取的变量名，
+        # 否则就是「给 shell 起的别名不会传给子进程」那个坑。
+        assert "secrets.OPENAI_API_KEY" in real_workflow_text
 
 
 class TestMultipleWorkflows:
