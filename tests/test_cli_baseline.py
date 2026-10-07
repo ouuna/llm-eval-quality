@@ -29,6 +29,47 @@ from eval.cli.main import EXIT_DATA_ERROR, EXIT_GATE_FAILED, EXIT_OK
 
 
 # ============================================================
+# 环境隔离 fixture
+# ============================================================
+@pytest.fixture(autouse=True)
+def _隔离配置(monkeypatch, tmp_path):
+    """
+    屏蔽所有 API 配置来源。
+
+    真实踩过的坑
+    ------------
+    这组测试直接调 `cmd_run(args)`，而 `cmd_run` 开头会做
+    `if not args.mock: check_config(require_api=True)`。
+
+    于是测试能不能过，取决于**运行它的机器上有没有 .env**：
+      本地有 .env  → check_config 通过 → 测到真正的基线逻辑
+      CI 上没 .env → check_config 返回「缺配置」→ cmd_run 直接
+                     返回 EXIT_CONFIG_ERROR(2)
+
+    表现是「本地 7 项全过，CI 5 项失败」，
+    而且失败原因（退出码 2）与被测逻辑（基线对比）毫无关系。
+
+    修法不是给测试塞 .env，而是**显式声明这个测试不需要 API**。
+    这样它在任何环境下行为都一致。
+    """
+    from eval import env_loader
+
+    empty = tmp_path / "empty.env"
+    empty.write_text("", encoding="utf-8")
+
+    for name in (
+        env_loader.ENV_API_KEY, env_loader.ENV_BASE_URL,
+        env_loader.ENV_MODEL_NAME, env_loader.ENV_JUDGE_MODEL,
+        env_loader.LEGACY_API_KEY, env_loader.LEGACY_BASE_URL,
+        env_loader.LEGACY_MODEL_NAME, env_loader.LEGACY_JUDGE_MODEL,
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    monkeypatch.setattr(env_loader, "ENV_FILE", str(empty))
+    monkeypatch.setattr("eval.cli.main.check_config", lambda **k: [])
+
+
+# ============================================================
 # 单元层：顺序对不对
 # ============================================================
 
