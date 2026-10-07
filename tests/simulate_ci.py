@@ -42,6 +42,20 @@ import tempfile
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 把项目根加入 sys.path。
+#
+# 为什么需要这一步
+# ----------------
+# `python -m tests.simulate_ci` 依赖 cwd 在 sys.path 上。
+# GitHub Actions 里workflow 的默认 working-directory 是仓库根，
+# 但如果将来加了 `defaults: run: working-directory:`，
+# 或在别的目录里调用，这个模块就会ImportError。
+#
+# 实测踩过：CI 上这个 step 4 秒就失败且没有任何 pytest 输出，
+# 典型的「模块都没导入成功」而不是「测试跑挂了」。
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 
 def _isolate_env():
     """
@@ -117,8 +131,14 @@ def main(argv=None):
     # 用 try/finally 保证 .env 一定被挪回去。
     #
     # 这是整个工具里最不能出错的地方——
-    # 一旦 .env 丢了，用户下次跑真实评测就没法用了，
+    # 一旦 .env 丢了，用户下次跑真实评测就没得用了，
     # 那比测试失败严重得多。
+    #
+    # 注意：**finally 里不能 return**。
+    # Python 3.14 会警告，3.11 行为也不同（会吞掉正在传播的异常）。
+    # 所以恢复失败只记录，不改变返回值。
+    restore_failed = False
+
     try:
         print("-" * 66)
         try:
@@ -133,20 +153,26 @@ def main(argv=None):
                 shutil.move(moved_to, os.path.join(PROJECT_ROOT, ".env"))
                 print("（.env 已恢复）")
             except (OSError, shutil.Error) as e:
+                restore_failed = True
                 print("=" * 66)
                 print(f"严重错误：.env 恢复失败！{e}")
                 print(f"你的配置文件在：{moved_to}")
                 print("请手动把它挪回项目根目录并重命名为 .env")
                 print("=" * 66)
-                return 3
-        # 清理临时目录
         try:
             shutil.rmtree(tmp, ignore_errors=True)
         except OSError:
             pass
 
+    if restore_failed:
+        return 3
+
     out = r.stdout or ""
+    err = r.stderr or ""
     print(out[-4000:])
+    if err.strip():
+        print("--- stderr ---")
+        print(err[-1500:])
 
     if r.returncode == 0:
         print("=" * 66)
