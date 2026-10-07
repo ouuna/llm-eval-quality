@@ -359,6 +359,48 @@ python -m tests.simulate_ci            # 约 30 秒
 3. 本地跑 `simulate_ci`，看是否能在本地复现
 4. 以上都排除了，才考虑 GitHub 侧的差异
 
+### 两个反直觉的坑
+
+**GitHub Actions 的 `env:` 是 step 级作用域**
+
+```yaml
+- name: 密钥检查
+  env:
+    EVAL_API_KEY: ${{ secrets.OPENAI_API_KEY }}   # ← 只在这一步有效
+- name: 确认配置可读
+  # 这里若不重复声明，程序读不到任何配置
+```
+
+漏传时的表现极具迷惑性：上一步绿勾（判定已配置）、
+下一步红叉（程序说未配置）—— **两步自相矛盾**，
+让人怀疑密钥坏了，其实只是没传。
+
+**在 Windows 上用 `>>` 追加中文会破坏 UTF-8**
+
+```bash
+echo "中文内容" >> README.md     # 按 GBK 写入，文件不再是合法 UTF-8
+```
+
+后果：读取时报 `UnicodeDecodeError`，但如果失败信息是
+「文档缺某章节」，就会误以为是内容问题。
+改文件请用编辑器或 IDE，不要用 shell 重定向。
+
+### 分支保护怎么配才对
+
+GitHub 只允许勾选**在同一个 PR 上跑过、且 workflow 文件仍存在**的检查项。
+所以顺序不能反：
+
+1. 确认 workflow 已合并到 `main`
+2. 等一次 push 运行完成
+3. 建特性分支 + 一个真实改动，推送
+4. 创建 PR，等 `pull_request` 事件触发
+5. **此时**分支保护页的搜索框里才有可选项
+6. 勾选后 Create
+
+第3 步的「真实改动」不能省：空提交在
+「先建分支、后合并 main」的情况下会被抵消，
+GitHub 会提示 "There isn't anything to compare"。
+
 ---
 
 ## 已知限制
