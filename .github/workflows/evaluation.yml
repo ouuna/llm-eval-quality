@@ -165,15 +165,49 @@ jobs:
         # 这步验证程序真的读得到。混在一起时，
         # 密钥问题会伪装成评测失败，极难排查。
         if: steps.keycheck.outputs.skip == 'false'
-        run: python -m eval config
+        # 必须重复传一遍环境变量！
+        #
+        # GitHub 的 env 是 **step 级作用域**，
+        # 上一步「密钥检查」里声明的 EVAL_* 不会延续到这一步。
+        # 漏掉的表现极具迷惑性：
+        #   密钥检查     绿勾 → 判定 secrets 已配置
+        #   确认配置可读 红叉 → 程序说未配置
+        # 两步自相矛盾，让人怀疑密钥坏了，其实只是没传。
+        env:
+          EVAL_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          EVAL_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          EVAL_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
+        # 退出码 2 = 未配置。这是**可预期**的状态
+        # （仓库还没配 Secrets 时），不是 workflow 配错，
+        # 所以只警告不失败——
+        # 否则每个 PR 都红一次，看久了就麻木，
+        # 真配错时也没人警觉。
+        run: |
+          set +e
+          python -m eval config
+          code=$?
+          set -e
+          if [ "$code" -eq 2 ]; then
+            echo "::warning::未检测到 API 配置，跳过配置校验。"
+            echo "::warning::这是预期状态（仓库 Secrets 未配置时）。"
+            echo "::warning::需要真实评测时，请补齐仓库 Secrets："
+            echo "::warning::  OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL_NAME"
+          elif [ "$code" -ne 0 ]; then
+            echo "::error::eval config 异常退出（$code），这不是配置缺失。"
+            exit "$code"
+          fi
 
       - name: 执行质量评测
         id: run_eval
         if: steps.keycheck.outputs.skip == 'false'
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
+          # 用 EVAL_* 而非 OPENAI_*：
+          # 程序优先读 EVAL_ 前缀的（项目专属名），
+          # 两者都支持，但统一用同一个能避免
+          # 「密钥检查查 EVAL_、评测用 OPENAI_」这类不一致。
+          EVAL_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          EVAL_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          EVAL_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
         run: |
           EXTRA=""
           if [ "${{ inputs.enable_judge }}" = "true" ]; then EXTRA="$EXTRA --judge"; fi
