@@ -36,8 +36,34 @@ README = os.path.join(_PROJECT_ROOT, "README.md")
 
 
 def _read():
-    with open(README, "r", encoding="utf-8") as f:
-        return f.read()
+    """
+    读 README，必须严格按 UTF-8。
+
+    真实踩过的坑
+    ------------
+    README 末尾被误写入一段 GBK 编码的中文注释，
+    于是 `open(README, encoding="utf-8")` 抛
+    UnicodeDecodeError，18 个测试全部失败。
+
+    为什么本地没发现：这个文件是我用 shell 重定向写的，
+    Windows 下 `>>` 默认用 GBK 追加中文，
+    只有读文件时才暴露。
+
+    所以这里显式用二进制先校验编码——
+    编码错误要在读内容之前就报出来，
+    而不是伪装成「README 缺某个章节」。
+    """
+    with open(README, "rb") as f:
+        raw = f.read()
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        pytest.fail(
+            f"README 不是合法 UTF-8（位置 {e.start}）：{e}\n"
+            f"常见原因：用 shell 的 >> 重定向追加中文时，"
+            f"Windows 默认按 GBK 写入。\n"
+            f"修法：用 Write 工具或编辑器改写该文件，"
+            f"不要用 >> 追加中文。")
 
 
 class TestNumbersMatchReality:
