@@ -176,17 +176,37 @@ _REGISTRY: Dict[str, type] = {
 }
 
 
+def _lazy_http_provider():
+    """
+    延迟导入 HTTPProvider。
+
+    为什么要延迟
+    ------------
+    http_provider 只用到标准库，放到_sut.py 顶部直接 import
+    本身没什么问题；但显式延迟能让依赖关系更清楚：
+    「HTTP 调用是可选能力，不是核心链路的一部分」。
+    """
+    from eval.providers.http_provider import HTTPProvider
+    return HTTPProvider
+
+
 def get_provider(name: str, **kwargs):
     """
     按名称获取 Provider
 
     参数
     ----
-    name: rag | mock
+    name  rag     本地 RAG 系统（直接函数调用）
+          http    HTTP 服务（真实网络链路）
+          mock    故障注入
     """
+    if name == "http":
+        return _lazy_http_provider()(**kwargs)
+
     if name not in _REGISTRY:
         raise KeyError(
-            f"未知 Provider：{name}，可用：{list(_REGISTRY)}"
+            f"未知 Provider：{name}，"
+            f"可用：{list(_REGISTRY) + ['http', 'mock']}"
         )
     return _REGISTRY[name](**kwargs)
 

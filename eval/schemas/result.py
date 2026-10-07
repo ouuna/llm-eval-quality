@@ -343,33 +343,51 @@ class EvalReport:
         return self.count(Status.ERROR.value)
 
     @property
-    def pass_rate(self) -> float:
-        """通过率。error 不计入分母 —— 错误不是"质量表现"而是"评测未完成" """
+    def pass_rate(self) -> Optional[float]:
+        """
+        通过率。error 不计入分母 —— 错误不是「质量表现」而是「评测未完成」。
+
+        分母为 0 时返回 **None** 而不是 0.0。
+        --------------------------
+        0.0 的含义是「都测了，无一通过」；
+        None 的含义是「一条都没测成」。
+
+        这两者完全相反，而原来的 `else 0.0` 把它们混成同一个值。
+        后果很实际：API Key 失效导致全部调用失败时，
+        报告显示「通过率 0%」，看起来像质量极差；
+        但真正的问题是「什么都没测到」，
+        排查方向完全不一样——前者该改模型，后者该查配置。
+        """
         valid = self.passed + self.failed
-        return round(self.passed / valid, 4) if valid else 0.0
+        if not valid:
+            return None
+        return round(self.passed / valid, 4)
 
     def latency_stats(self) -> Dict[str, Optional[float]]:
-        """延迟统计。全部不可用时返回 None 而非 0"""
+        """
+        延迟统计。全部不可用时返回 None 而非 0。
+
+        分位数计算已统一到 eval.metrics.percentile。
+        这里原先自带一套pct() 实现，与 runner.py 里的算法不同——
+        同一个「P95」在报告和门禁里可能算出两个值。
+        统计口径必须只有一处定义，否则对不上时很难排查。
+        """
+        from eval.metrics import percentile as _pct
+
         lats = [c.latency_ms for c in self.cases if c.latency_ms > 0]
         if not lats:
             return {"count": 0, "mean": None, "p50": None,
-                    "p95": None, "max": None, "available": False}
-
-        s = sorted(lats)
-        n = len(s)
-
-        def pct(p: float) -> float:
-            if n == 1:
-                return float(s[0])
-            idx = min(n - 1, int(round((p / 100) * (n - 1))))
-            return float(s[idx])
+                    "p90": None, "p95": None, "p99": None,
+                    "max": None, "available": False}
 
         return {
-            "count": n,
-            "mean": round(sum(s) / n, 1),
-            "p50": pct(50),
-            "p95": pct(95),
-            "max": float(s[-1]),
+            "count": len(lats),
+            "mean": round(sum(lats) / len(lats), 1),
+            "p50": _pct(lats, 50),
+            "p90": _pct(lats, 90),
+            "p95": _pct(lats, 95),
+            "p99": _pct(lats, 99),
+            "max": float(max(lats)),
             "available": True,
         }
 

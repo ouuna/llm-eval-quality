@@ -273,6 +273,9 @@ CASES = [
 DATASET = Dataset(
     name="full",
     tier="full",
-    description="完整评测集：12 个类别，22 条用例",
+    # 条数由 len(CASES) 决定，不写死——
+    # 早先这里写「22 条」但实际是 19 条，
+    # 数据与描述对不上，读的人会以为漏了 3 条用例。
+    description=f"完整评测集：12 个类别，{len(CASES)} 条用例",
     cases=CASES,
 )

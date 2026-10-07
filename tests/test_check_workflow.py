@@ -15,7 +15,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tests.check_workflow import check_workflow, WORKFLOW_PATH
+from tests.check_workflow import (
+    all_workflow_paths, check_workflow, WORKFLOW_PATH,
+)
 
 
 @pytest.fixture
@@ -274,3 +276,166 @@ class TestDetectsErrors:
 
     def test_干净文件不报错(self, tmp_path, real_workflow_text):
         assert check_workflow(_write(tmp_path, real_workflow_text)) == []
+
+
+class TestSecretsAliasConsistency:
+    """
+    变量名别名检查（2026-10 新增）
+
+    真实踩过的坑
+    ------------
+    修 CI「密钥检查」step 失败时定位到的：
+    那个 step 的 env 写的是 KEY / URL / MODEL 三个别名，
+    只给 bash 做空值判断用。但同一个 step 里还有一句
+    `python -m eval config`，它读的是 EVAL_API_KEY。
+
+    CI 上没有 .env（被 gitignore），所以程序判定「未配置」，
+    返回退出码 2，整个 step 失败。
+
+    整个过程持续了 5 次 push才发现，
+    因为 YAML 完全合法、GitHub 不给任何提示、本地测试全绿。
+    """
+
+    def test_抓出别名变量名配python调用(self, tmp_path):
+        """核心用例：别名 + 同 step 内调CLI，必须报错"""
+        broken = """name: T
+on:
+  push:
+    branches: [ main ]
+jobs:
+  evaluation:
+    name: 质量评测
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 密钥检查
+        id: keycheck
+        env:
+          KEY: ${{ secrets.OPENAI_API_KEY }}
+          URL: ${{ secrets.OPENAI_BASE_URL }}
+        run: |
+          if [ -z "$KEY" ]; then exit 0; fi
+          python -m eval config
+"""
+        issues = check_workflow(_write(tmp_path, broken))
+        assert issues, "!!! 没抓到别名变量名问题"
+        msg = " ".join(str(i) for i in issues)
+        assert "别名" in msg, f"提示应说明问题性质：{msg}"
+        assert "子进程" in msg, f"提示应说清根因：{msg}"
+
+    def test_别名但没有python调用不算错(self, tmp_path):
+        """
+        防误报：纯 shell 步骤用别名是完全合法的，
+        不该被这个检查器拦下。
+        """
+        ok = """name: T
+on:
+  push:
+    branches: [ main ]
+jobs:
+  evaluation:
+    name: 质量评测
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 纯 shell 判断
+        env:
+          KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "跳过"
+          fi
+"""
+        issues = check_workflow(_write(tmp_path, ok))
+        assert issues == [], (
+            "纯 shell 步骤用别名不该报错："
+            + " ".join(str(i) for i in issues))
+
+    def test_仓库中映射到程序认识的名字(self, real_workflow_text):
+        """
+        当前修复后的写法：直接映射到 EVAL_API_KEY 等程序认识的名字。
+        """
+        # 注意不能写成 "KEY: ${{ secrets." —— 那是子串匹配，
+        # 会连合法的 EVAL_API_KEY 一起误判。
+        # 必须要求行首缩进后紧跟 KEY，即「整段就是 KEY」。
+        for line in real_workflow_text.splitlines():
+            if "secrets." not in line:
+                continue
+            name = line.strip().split(":")[0]
+            assert name in ("EVAL_API_KEY", "EVAL_BASE_URL",
+                            "EVAL_MODEL_NAME", "OPENAI_API_KEY",
+                            "OPENAI_BASE_URL", "OPENAI_MODEL_NAME"), \
+                f"secrets 被映射到了程序不认识的名字：{name}"
+
+        assert "EVAL_API_KEY: ${{ secrets.OPENAI_API_KEY }}" \
+            in real_workflow_text, \
+            "secrets 应映射到程序真正读取的变量名"
+
+
+class TestMultipleWorkflows:
+    """
+    CI 拆成三个 workflow 后的回归测试。
+
+    为什么要专门测
+    --------------
+    检查器早先只认 eval.yml 一个文件。拆分后新增的三个文件
+    完全不在检查范围内——而 workflow 语法错误会让**整个文件作废**，
+    不检查等于没部署过。
+    """
+
+    def test_应找到全部workflow(self):
+        paths = all_workflow_paths()
+        assert len(paths) >= 3, \
+            f"只找到 {len(paths)} 个 workflow，目录扫描可能坏了"
+
+    def test_三个拆分后的文件都存在(self):
+        import os
+        names = {os.path.basename(p) for p in all_workflow_paths()}
+        for expected in ("test.yml", "evaluation.yml", "regression.yml"):
+            assert expected in names, f"缺少 {expected}"
+
+    def test_每个workflow都无问题(self):
+        """逐个检查，而不是只看默认的那个"""
+        for path in all_workflow_paths():
+            issues = check_workflow(path)
+            assert not issues, (
+                f"{os.path.basename(path)} 有问题："
+                f"{'; '.join(str(i) for i in issues)}")
+
+    def test_能解析为合法yaml(self):
+        """
+        用真实 YAML 解析器验证。
+
+        自己的检查器是零依赖的正则实现，
+        可能有盲区——只有真正的解析器能证明文件可用。
+        没有 PyYAML 时跳过，不强制依赖。
+        """
+        yaml = pytest.importorskip("yaml",
+                                    reason="未安装 PyYAML，跳过解析验证")
+
+        for path in all_workflow_paths():
+            with open(path, "r", encoding="utf-8") as f:
+                try:
+                    data = yaml.safe_load(f.read())
+                except Exception as e:
+                    pytest.fail(f"{os.path.basename(path)} YAML 解析失败：{e}")
+
+            assert isinstance(data, dict), \
+                f"{os.path.basename(path)} 顶层不是字典"
+            jobs = data.get("jobs")
+            assert isinstance(jobs, dict) and jobs, \
+                f"{os.path.basename(path)} 缺少 jobs 或 jobs 为空"
+
+    def test_每个workflow都有workflow_lint(self):
+        """
+        每个 workflow 都要有语法检查 job。
+
+        没有它的workflow 一旦写错就是「1 秒失败」，
+        排查时连哪个 job 挂了都看不出来。
+        """
+        for path in all_workflow_paths():
+            name = os.path.basename(path)
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+            assert "workflow-lint" in content, \
+                f"{name} 缺少 workflow-lint job"

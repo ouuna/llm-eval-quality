@@ -1,0 +1,63 @@
+==============================================================
+Evaluation Summary
+==============================================================
+Dataset: extended (extended)
+Model:   glm-4-flash
+Time:    2026-10-07 12:30:24
+
+Cases:   17
+Passed:  4
+Failed:  13
+Errors:  0
+Pass Rate: 23.53%
+
+--------------------------------------------------------------
+Metrics
+--------------------------------------------------------------
+  overall_pass_rate        0.2353
+  hallucination_rate       0.2941
+  refusal_accuracy         0.7647
+  faithfulness             0.8303
+  answer_correctness       0.803
+  completeness             0.803
+  relevance                0.664
+  retrieval_hit_rate       0.8235
+  consistency              0.7408
+  score_std                0.2545
+  p95_latency_ms           7451.799999999997
+  error_rate               0.0
+  avg_cost                 unavailable
+
+--------------------------------------------------------------
+Performance
+--------------------------------------------------------------
+  Latency mean 2534ms  P50 1736ms  P95 7452ms
+  Tokens: unavailable
+
+--------------------------------------------------------------
+Failure Pareto
+--------------------------------------------------------------
+  IRRELEVANT                 7   35.0%  (cum 35%)
+  INCOMPLETE_ANSWER          6   30.0%  (cum 65%)
+  HALLUCINATION              5   25.0%  (cum 90%)
+  REFUSAL_ERROR              2   10.0%  (cum 100%)
+
+--------------------------------------------------------------
+Quality Gate: FAILED
+Reason:
+  - [hallucination_rate] 未达标：0.2941 <= 0.05
+失败样本：ext_sum_02, ext_cond_02, ext_adv_02, ext_adv_03, ext_adv_04
+  - [refusal_accuracy] 未达标：0.7647 >= 0.95
+失败样本：ext_sum_01, ext_ctx_04, ext_bnd_02, ext_adv_03
+  - [faithfulness] 未达标：0.8303 >= 0.9
+  - [answer_correctness] 未达标：0.8030 >= 0.9
+  - [overall_pass_rate] 未达标：0.2353 >= 0.95
+  - [completeness] 未达标：0.8030 >= 0.9
+  - [consistency] 未达标：0.7408 >= 0.85
+  - [score_std] 未达标：0.2545 <= 0.15
+==============================================================
+
+报告已保存：
+   HTML: reports\report.html
+   JSON: reports\eval_results.json
+    CSV: reports\eval_report.csv

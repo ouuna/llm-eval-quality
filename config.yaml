@@ -41,11 +41,29 @@ prompt:
     请用中文简洁回答：
 
 # ---------------- 评测配置 ----------------
+# 这里的每一项都会被 eval/thresholds.py 读取并真正生效。
+# 查看当前生效的全部阈值：python -m eval.thresholds
+#
+# 注意键名已改过：原先的 hallucination_threshold / completeness_threshold
+# 从未被代码读取（真正生效的是函数签名里的默认值），
+# 属于「看起来可调、实际不可调」的假配置，已删除。
 evaluation:
-  # 幻觉检测：实词覆盖率阈值，低于此值判定为幻觉
-  hallucination_threshold: 0.6
-  # 完整性检测：关键要点覆盖率阈值
-  completeness_threshold: 0.7
+  # 声明级幻觉检测 —— 三级判定
+  #   覆盖率 >= supported  → 有支撑
+  #   partial <= 覆盖率 < supported  → 支撑不足（算部分幻觉）
+  #   覆盖率 < partial     → 无支撑，判为幻觉
+  hallucination_supported: 0.6
+  hallucination_partial: 0.35
+
+  # forbidden 事实（实体调换类幻觉）的字符覆盖率阈值
+  forbidden_match: 0.8
+  # required 事实的字符覆盖率阈值
+  required_fact_hit: 0.5
+
+  # 正确性 / 完整性判定
+  correctness_pass: 0.7
+  completeness_pass: 0.7
+
   # 稳定性测试：同一问题重复次数
   stability_repeat: 3
   # 稳定性相似度算法：jaccard（字符集合）/ overlap（最长公共子序列）

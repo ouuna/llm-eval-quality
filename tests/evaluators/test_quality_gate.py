@@ -26,7 +26,7 @@ class TestGateEvaluation:
         report = gate.evaluate({
             "hallucination_rate": 0.01, "refusal_accuracy": 1.0,
             "faithfulness": 0.98, "answer_correctness": 0.95,
-            "regression_pass_rate": 1.0, "overall_pass_rate": 0.98,
+            "error_rate": 0.0, "overall_pass_rate": 0.98,
             "completeness": 0.97, "relevance": 0.85,
             "retrieval_hit_rate": 0.90, "p95_latency_ms": 2000,
             "avg_cost": 0.05, "consistency": 0.96, "score_std": 0.03,
@@ -38,8 +38,13 @@ class TestGateEvaluation:
         gate = QualityGate()
         r = gate.evaluate({"answer_correctness": 0.80})
         assert not r.passed
-        failed = r.failed_checks[0]
-        assert failed.name == "answer_correctness"
+        # 新规则下 critical 层缺失指标也会判失败并进入 failed_checks，
+        # 所以必须筛出「真正有值且低于阈值」的那一个，
+        # 否则会拿到缺失项而不是低分项。
+        failed = [c for c in r.failed_checks
+                  if c.name == "answer_correctness" and c.available]
+        assert len(failed) == 1, f"应恰好有一个低分的 answer_correctness"
+        failed = failed[0]
         assert failed.current_value == 0.80
         assert failed.threshold_value == 0.90
         assert failed.comparison == "min"
@@ -48,17 +53,19 @@ class TestGateEvaluation:
         gate = QualityGate()
         r = gate.evaluate({"hallucination_rate": 0.15})
         assert not r.passed
-        failed = [c for c in r.failed_checks if c.name == "hallucination_rate"][0]
+        # 同上：要筛 available，否则可能取到缺失的那一项
+        failed = [c for c in r.failed_checks
+                  if c.name == "hallucination_rate" and c.available][0]
         assert failed.comparison == "max"
         assert failed.current_value > failed.threshold_value
 
     def test_boundary_equal_passes(self):
         """恰好等于阈值应通过（闭区间）"""
         gate = QualityGate()
-        r = gate.evaluate({"regression_pass_rate": 1.0,
+        r = gate.evaluate({"error_rate": 0.0,
                           "hallucination_rate": 0.05})
         checks = {c.name: c for c in r.checks}
-        assert checks["regression_pass_rate"].passed
+        assert checks["error_rate"].passed
         assert checks["hallucination_rate"].passed
 
     def test_enabled_layers(self):
@@ -69,24 +76,99 @@ class TestGateEvaluation:
         # critical 层未启用，其检查项不参与
         assert all(c.layer != "critical" for c in r.checks)
 
-    def test_unavailable_metric_is_skipped(self):
+    def test_unavailable_critical_metric_fails(self):
         """
-        指标不可用时跳过而非判失败
+        critical 层指标不可用 = 门禁失败。
 
-        理由：指标不可计算不等于指标不达标。
-        但报告必须显式说明跳过原因。
+        这是 2026-10-07 修掉的一个后门。
+        早先的实现对缺失指标一律 passed=True，理由是
+        「指标算不出来 ≠ 指标不达标」。但这个理由站不住：
+
+          · API Key 失效 → 全部调用失败 → 指标全 None → 门禁全绿
+          · Embedding 挂了 → groundedness 不可用 → 门禁全绿
+          · 评测器自身抛异常 → 同上
+
+        也就是说系统坏得越彻底，CI 越绿。
+        这与项目里 Status.ERROR 不计入通过率分母的设计自相矛盾——
+        那边刚堵住的洞，这边又开了。
+
+        反过来看，这也正是本用例存在的意义：
+        它断言的正是「不该放过的情况不会放过」。
         """
         gate = QualityGate()
         r = gate.evaluate({})     # 全部缺失
-        assert r.passed, "指标缺失不应导致门禁失败"
-        assert len(r.skipped_checks) > 0
+        assert not r.passed, (
+            "critical 层指标全部缺失却通过门禁——这正是假通过")
+
+        # 缺失项必须仍被标记为「不可用」，两者不冲突
+        assert len(r.skipped_checks) > 0, "缺失项应记为 skipped"
         assert all(c.skip_reason for c in r.skipped_checks)
 
-    def test_skipped_message_explains(self):
+    def test_unavailable_noncritical_metric_is_allowed(self):
+        """
+        防误报：非 critical 层缺失仍然放行。
+
+        比如 avg_cost 在 Provider 不返回token 时就是 None，
+        这不代表出了故障。强行拦下只会制造大量误报，
+        反而让人习惯性忽略门禁结果。
+        """
+        gate = QualityGate()
+        # 只评估 stability 层（consistency / score_std）
+        r = gate.evaluate({}, enabled_layers=["stability"])
+        assert r.passed, "非 critical 层缺失不应导致失败"
+        assert all(c.skip_reason for c in r.checks), \
+            "放行也必须说明原因，不能静默"
+
+    def test_missing_noncritical_passes_when_only_it_missing(self):
+        """
+        只提供一个指标、其余全无时，两类层应区别对待：
+
+          · critical层缺失 → 失败（系统可能已经坏了）
+          · 非 critical 缺失 → 放行（如 consistency 常因样本不足不可算）
+
+        这条测试是为了钉住「分层处理」这个行为本身，
+        防止将来有人为了省事把所有层都改成同一种处理方式。
+        """
+        gate = QualityGate()
+        r = gate.evaluate({"avg_cost": 0.1})
+        by_name = {c.name: c for c in r.checks}
+
+        # 已提供的指标正常判定
+        assert by_name["avg_cost"].passed
+        assert by_name["avg_cost"].available
+
+        # stability 层缺失 → 放行
+        assert by_name["consistency"].layer == "stability"
+        assert by_name["consistency"].passed, \
+            "stability 层缺失应放行"
+        assert not by_name["consistency"].available
+
+        # critical 层缺失 → 失败
+        assert not by_name["hallucination_rate"].passed, \
+            "critical 层缺失应失败"
+        assert not by_name["hallucination_rate"].available
+
+        # 整体结论：critical 层的缺失决定了门禁失败
+        assert not r.passed
+
+    def test_unavailable_message_states_how_it_was_handled(self):
+        """
+        缺失项的信息必须说清「按失败处理」还是「按放行处理」。
+
+        只写「跳过」会让人以为既没通过也没失败，
+        实际上 critical 层已经让门禁失败了——
+        报告与实际判定不符会误导排查方向。
+        """
         gate = QualityGate()
         r = gate.evaluate({})
-        msg = r.skipped_checks[0].message
-        assert "跳过" in msg
+        critical_missing = [c for c in r.checks
+                            if c.layer == "critical" and not c.available]
+        assert critical_missing, "应有 critical 层缺失项"
+        for c in critical_missing:
+            assert "失败" in c.skip_reason, (
+                f"{c.name} 应明确说明按失败处理，实际：{c.skip_reason}")
+            assert "跳过" not in c.skip_reason, \
+                "文案不该说「跳过」，那会与 passed=False 矛盾"
 
 
 # ============================================================
@@ -104,7 +186,10 @@ class TestDiagnostics:
             failed_samples={"answer_correctness":
                             ["case-01", "case-02", "case-03"]},
         )
-        failed = r.failed_checks[0]
+        # 必须按名字取，不能用 [0]：
+        # 新规则下critical 层缺失指标也会进入 failed_checks，
+        # 索引 0 未必是真正低分的那个。
+        failed = {c.name: c for c in r.failed_checks}["answer_correctness"]
         msg = failed.message
 
         assert "answer_correctness" in msg
@@ -143,7 +228,9 @@ class TestDiagnostics:
         samples = [f"case-{i:03d}" for i in range(30)]
         r = gate.evaluate({"answer_correctness": 0.5},
                           failed_samples={"answer_correctness": samples})
-        msg = r.failed_checks[0].message
+        # 同样按名字取，避免被 critical 层缺失项挤掉
+        target = {c.name: c for c in r.failed_checks}["answer_correctness"]
+        msg = target.message
         assert "30 个" in msg, "应报告失败总数"
         assert "case-000" in msg
 
@@ -160,7 +247,7 @@ class TestConfig:
         c = DEFAULT_GATE_CONFIG["critical"]
         for name in ("hallucination_rate", "refusal_accuracy",
                      "faithfulness", "answer_correctness",
-                     "regression_pass_rate"):
+                     "error_rate"):
             assert name in c, f"critical 层缺少 {name}"
 
     def test_every_rule_has_desc(self):

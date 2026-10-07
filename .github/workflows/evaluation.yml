@@ -1,0 +1,224 @@
+# ============================================================
+# 真实 API 评测 + 质量门禁
+#--------------------------------
+# 与 test.yml 的分工
+# ------------------
+#   test.yml        纯离线，任何 PR 都跑，给快速反馈
+#   evaluation.yml  本文件，需要 API Key，产出质量结论
+#
+# 触发策略的取舍
+# ------------
+#   PR        只跑 smoke（8 条）—— 快，且够用
+#   push      跑 smoke + extended —— 合并后的全面回归
+#   定时      跑 full + extended —— 每日回归
+#   手动      可选数据集与组件
+#
+# 为什么 PR 只跑 smoke
+# ------------------
+# 真实 API 调用按 token 计费。PR 上跑全部数据集既慢又贵，
+# 而 smoke 已覆盖 6 类关键失败模式，足以拦住大部分回归。
+# 更全面的评测放在合并后。
+#
+# 退出码语义（与 test.yml 无关，独立定义）
+# --------------------------------------
+#   0  门禁通过
+#   1  门禁未通过 —— 评测系统正常工作，这是预期结果
+#   2  配置错误（缺 API Key）
+#   3  数据错误
+#   4  运行错误
+#
+# 关键：退出码 1 不让 CI 变红。
+# 因为被测的 RAG 系统确实有幻觉，评测器把它拦下来是**正确行为**。
+# 若门禁失败就让 CI 失败，CI 会长期是红的，
+# 久而久之没人再看，等于没有门禁。
+# 真正该让 CI 失败的是 2/3/4 —— 那是链路坏了。
+# ============================================================
+
+name: LLM Evaluation
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [ opened, synchronize, reopened ]
+
+  push:
+    branches: [ main ]
+
+  schedule:
+    # 每日 02:00 UTC 定时回归
+    - cron: '0 2 * * *'
+
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: 要运行的数据集（可组合，用 + 分隔）
+        required: false
+        default: 'full+extended'
+        type: string
+      enable_judge:
+        description: 启用 LLM Judge（成本较高）
+        required: false
+        default: false
+        type: boolean
+      enable_semantic:
+        description: 启用 Embedding 语义评测
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: evaluation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # Job 0：workflow 语法检查
+  #
+  # 与 test.yml 里那份代码相同但各自独立。
+  # 重复是有意的：每个 workflow 都必须能独立校验，
+  # 共用一个 action 反而会引入耦合。
+  # ============================================================
+  workflow-lint:
+    name: Workflow 语法检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 检查 workflow 配置
+        run: python -m tests.check_workflow
+
+  # ============================================================
+  # Job 1：真实API 评测
+  # ============================================================
+  evaluate:
+    name: 质量评测
+    runs-on: ubuntu-latest
+    needs: workflow-lint
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install pytest
+
+      - name: 决定数据集
+        id: ds
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "value=smoke" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "value=smoke+extended" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "value=full+extended" >> $GITHUB_OUTPUT
+          else
+            echo "value=${{ inputs.dataset }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 密钥检查
+        id: keycheck
+        # 变量名必须和 env_loader 真正读取的名字一致。
+        #
+        # 这里踩过的坑：早先写的是 KEY / URL / MODEL 三个别名，
+        # 只给 bash 做空值判断用。但同一步里的
+        # `python -m eval config` 读的是 EVAL_API_KEY / OPENAI_API_KEY，
+        # CI 上又没有 .env（被 gitignore），
+        # 于是它认为「未配置」返回退出码 2，整个 step 失败。
+        #
+        # 教训：给 shell 起的别名不会自动传给子进程。
+        env:
+          EVAL_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          EVAL_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          EVAL_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
+        run: |
+          if [ -z "$EVAL_API_KEY" ] || [ -z "$EVAL_BASE_URL" ] \
+          || [ -z "$EVAL_MODEL_NAME" ]; then
+            echo "::warning::未配置 API secrets，跳过真实 API 评测"
+            echo "在仓库 Settings → Secrets 中补齐 OPENAI_API_KEY /"
+            echo "OPENAI_BASE_URL / OPENAI_MODEL_NAME 后重新推送即可。"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "模型：$EVAL_MODEL_NAME"
+          echo "接口：$EVAL_BASE_URL"
+          echo "数据集：${{ steps.ds.outputs.value }}"
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+      - name: 确认配置可读
+        # 与密钥检查分开：上一步只看 secret 存不存在，
+        # 这步验证程序真的读得到。混在一起时，
+        # 密钥问题会伪装成评测失败，极难排查。
+        if: steps.keycheck.outputs.skip == 'false'
+        run: python -m eval config
+
+      - name: 执行质量评测
+        id: run_eval
+        if: steps.keycheck.outputs.skip == 'false'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
+        run: |
+          EXTRA=""
+          if [ "${{ inputs.enable_judge }}" = "true" ]; then EXTRA="$EXTRA --judge"; fi
+          if [ "${{ inputs.enable_semantic }}" = "true" ]; then EXTRA="$EXTRA --semantic"; fi
+
+          set +e
+          python -m eval run --dataset "${{ steps.ds.outputs.value }}" \
+            --save-baseline $EXTRA
+          code=$?
+          set -e
+          echo "退出码：$code"
+          echo "code=$code" >> $GITHUB_OUTPUT
+
+          # 退出码分类：区分「链路是否跑通」与「门禁是否通过」
+          case "$code" in
+            0)
+              echo "::notice::门禁通过：所有指标达标"
+              ;;
+            1)
+              echo "::warning::门禁未通过。"
+              echo "::warning::这是评测系统在正常工作——它拦住了缺陷。"
+              echo "::warning::被测的 RAG 系统确实存在幻觉，属预期结果。"
+              ;;
+            2|3|4)
+              echo "::error::评测链路异常（退出码 $code），这不是门禁判定结果"
+              exit "$code"
+              ;;
+            *)
+              echo "::error::非预期退出码：$code"
+              exit 1
+              ;;
+          esac
+
+      - name: 上传评测报告
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-reports-${{ github.run_number }}
+          path: reports/
+          retention-days: 30
+
+      - name: 写入步骤摘要
+        if: always()
+        run: |
+          {
+            echo "### 质量评测"
+            echo ""
+            echo "- 数据集：\`${{ steps.ds.outputs.value }}\`"
+            echo "- 模型：\`${{ steps.keycheck.outputs.skip }}\`"
+            echo "- 报告制品：\`eval-reports-${{ github.run_number }}\`（保留 30 天）"
+            echo ""
+            if [ "${{ steps.keycheck.outputs.skip }}" = "true" ]; then
+              echo "> 未配置 API secrets，本次跳过真实评测。"
+            else
+              echo "> 完整指标见制品中的 \`eval_results.json\` 与 \`report.html\`。"
+            fi
+          } >> $GITHUB_STEP_SUMMARY

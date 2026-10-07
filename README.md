@@ -1,347 +1,446 @@
-# LLM 质量评测与质量门禁系统
+# LLM 质量评测与门禁系统
 
-> 面向 RAG 问答系统的自动化质量评测体系
-> 幻觉检测 · 正确性验证 · 质量门禁 · 持续集成
+> 面向 RAG / LLM 应用的自动化测试与质量门禁。
+> 验证对象是**输出质量**，不只是「接口能不能通」。
 
 ---
 
-## 这是什么
+## 这个项目在解决什么问题
 
-给 RAG 问答系统做**自动化质量检测**的框架。
+RAG / LLM 应用的测试与传统接口测试不一样：
 
-**核心问题**：AI 的回答是一段自然语言，没法像测按钮那样断言"点一下应该弹这个框"。而它最严重的失败不是"答错"，是"**一本正经地编造**"。
+| 传统接口测试 | LLM 应用测试 |
+|---|---|
+| 输出确定，同样输入必然同样输出 | 输出不确定，同一问题两次回答可能不同 |
+| 用 `assert response.status == 200` 判定 | 「200 但答案是错的」也算失败 |
+| 需求写清楚了，实现就是对的 | 实现对了但模型可能编造 |
 
-**本系统的作用**：量化"这个 AI 系统答得有多靠谱"→ 不达标时阻断 CI。
+最危险的一点是：**LLM 应用的失败会静悄悄发生**。
+返回 200、格式正确、逻辑通顺——但内容是编的。
+传统测试手段完全抓不到。
+
+本项目做的事：**把「内容质量」变成可自动判定的指标**，
+并用门禁在质量退化时拦住版本。
+
+---
+
+## 核心能力
+
+```
+测试数据 → 被测RAG API → 幻觉/正确性/完整性/相关性评测
+                              ↓
+                        拒答能力 · 稳定性
+                              ↓
+                     质量门禁（分层阈值）
+                              ↓
+              pytest → GitHub Actions → 测试报告
+```
+
+| 能力 | 说明 | 真实状态 |
+|---|---|---|
+| **声明级幻觉检测** | 把回答拆成原子声明，逐条找上下文依据 | 已实现，变异检出率 95.3% |
+| **接口契约测试** | 状态码 / schema / 超时 / 5xx | 47 项，离线可跑 |
+| **异常与边界测试** | 13 类异常，每类断言具体行为 | 36 项 |
+| **端到端集成测试** | HTTP → Provider → 评测器贯通 | 32 项 |
+| **性能与并发** | 5/10/20 并发，QPS / P95 / P99 / 错误率 | 17 项 |
+| **变异测试** | 把输入改坏，看评测器能否发现 | 已落地 |
+| **质量门禁** | 4 层 13 条规则，critical 层不可用即失败 | 已实现 |
+| **基线退化检测** | 方向感知 + 可比性校验 | 已实现 |
+| **阈值校准** | 在标注数据上扫描阈值，给出权衡曲线 | 30 条样本 |
+
+---
+
+## 架构
+
+```mermaid
+graph TB
+    subgraph 数据层
+        DS["测试数据集<br/>smoke 8 / full 19 / extended 17"]
+        GS["Gold Set 30 条<br/>人工标注"]
+    end
+
+    subgraph 被测层
+        API["RAG HTTP 服务<br/>app/server.py"]
+        PROV["Provider 抽象<br/>RAG / HTTP / Mock"]
+    end
+
+    subgraph 评测层
+        FAITH["幻觉检测<br/>声明级"]
+        CORR["正确性/完整性/相关性"]
+        REF["拒答判定"]
+        SEM["语义评测<br/>Embedding / Judge"]
+    end
+
+    subgraph 度量层
+        MET["统计层<br/>分位数/错误率"]
+        BASE["基线对比<br/>方向感知"]
+    end
+
+    subgraph 门禁层
+        GATE["Quality Gate<br/>critical/quality/performance/stability"]
+    end
+
+    subgraph 输出层
+        RPT["报告<br/>HTML/JSON/CSV"]
+        CI["GitHub Actions<br/>test/evaluation/regression"]
+    end
+
+    DS --> API
+    API --> PROV
+    PROV --> FAITH
+    PROV --> CORR
+    PROV --> REF
+    PROV -.可选.-> SEM
+    FAITH --> MET
+    CORR --> MET
+    REF --> MET
+    MET --> BASE
+    BASE --> GATE
+    MET --> GATE
+    GATE --> RPT
+    GATE --> CI
+    GS -.验证评测器.-> FAITH
+
+    style GS fill:#e8f4ea
+    style GATE fill:#fff3cd
+```
+
+**分层解耦**：数据集、Provider、评测器、统计层、门禁各自独立。
+换被测系统只需新增一个 Provider；换评测算法不影响门禁与报告。
 
 ---
 
 ## 快速开始
 
 ```bash
-python -m eval list                          # 列出数据集
-python -m eval validate --dataset full       # 验证数据集
-python -m eval run --dataset smoke --mock    # 离线评测（无需 API，4 秒）
-python -m eval run --dataset full            # 完整评测
-python -m eval case --id smoke_in_01 --detect "错误回答"  # 看判定过程
+# 1. 安装（唯一必需依赖）
+pip install pytest
+
+# 2. 配置 API（只对本项目生效，不污染系统环境变量）
+cp env.example .env
+# 编辑 .env 填入 API Key
+
+# 3. 自检
+python -m eval config        # 查看配置（密钥脱敏）
+python -m eval list          # 列出数据集
+
+# 4. 跑评测（不需要 API Key 也可跑）
+python -m eval run --dataset smoke --mock
+
+# 5. 真实评测
+python -m eval run --dataset smoke
 ```
 
 ---
 
-## 项目规模
+## 幻觉是怎么判定的
 
-| 模块 | 规模 |
-|---|---|
-| 核心代码 `eval/` `app/` | 32 文件 8099 行 |
-| 测试 `tests/` | 22 文件约 4700 行，347 项（离线 253 项） |
-| 技术文档 `docs/` | 6 份约 1900 行 |
-| 数据集 | 73 条（8 + 19 + 16 + 30）|
-| 指标 | 12 项 |
-| 历史缺陷档案 | 16 条 |
+不是「关键词覆盖率低 = 幻觉」。流程是：
 
-**零第三方依赖**：核心逻辑全部用 Python 标准库（json / urllib / re / csv / statistics）。PyYAML 存在时自动优先使用。
+```
+回答 → 拆成原子声明 → 每条找上下文依据 → 逐条判定
+                                        ├─ 覆盖率 ≥ 0.6  → 有支撑
+                    ├─ 覆盖率 ≥ 0.35 → 支撑不足
+                                        └─ 覆盖率 < 0.35 → 无支撑 → 幻觉
+```
 
----
+额外检测三类**字面重合度高但语义错误**的情况：
 
-## 核心能力
-
-### 1. 声明级幻觉检测
-
-**旧方法（字符覆盖率）的硬盲区**：
-
-| 回答 | 上下文 | 旧判定 | 正确 |
-|---|---|---|---|
-| 中国的首都是**上海** | 北京是中国的首都 | 无幻觉 ❌ | **有幻觉** |
-| 分为基础层、用例层、**报告层** | …数据层 | 无幻觉 ❌ | **有幻觉** |
-| 由 **Kent Beck** 提出 | …修改代码后 | 无幻觉 ❌ | **有幻觉** |
-| 今天天气晴朗 **25 度** | 等价类划分 | 无幻觉 ❌ | **有幻觉** |
-
-**根因**：字符覆盖率不区分实词的"角色"，"上海"和"北京"在字符层面无法分辨。
-
-**本系统**：拆成原子声明 → 逐条验证 → 叠加四类冲突检测（forbidden 事实 / 数字 / 否定极性 / 拉丁词）→ 跑题检测。
-
-**实测 30 条 Gold Set，零漏报。**
-
----
-
-### 2. 三类用例 + 12 个类别
-
-| 类型 | 场景 | 期望行为 |
+| 类型 | 例子 | 检出方式 |
 |---|---|---|
-| `in_domain` | 知识库内有答案 | 准确作答 |
-| `out_domain` | 知识库中**无答案** | **必须拒答** |
-| `ambiguous` | 问题不完整 | 要求澄清 |
-
-**域外用例是幻觉检测的核心** —— 幻觉只在模型没资料时才暴露。
-
-扩展至 12 类：多跳、否定、数字、同义改写、上下文冲突、Prompt Injection 等。
+| 数字冲突 | 上下文「3 个字段」，回答说「15 个字段」 | 上下文中不存在的数字 |
+| 否定翻转 | 上下文「关注状态码」，回答说「完全不关注」 | 极性检测（字面重合 0.625 也拦得住） |
+| 情态推测 | 上下文未提及，回答说「可能还包括…」 | 情态词 + 覆盖率不足 |
 
 ---
 
-### 3. 三种评测方法并存
+## 评测器自己可靠吗
 
-| 方法 | 强项 | 弱项 | 定位 |
-|---|---|---|---|
-| **Lexical** | 确定性、零成本 | 同义改写与实体调换是盲区 | Baseline |
-| **Semantic** | 识别同义改写 | 粒度粗，无法定位声明 | 辅助 |
-| **LLM Judge** | 复杂语义理解 | 有偏差、成本高 | 交叉验证 |
+这是最容易被跳过、但最该回答的问题。
 
-**三者不合并成一个分数**，因为失效模式不同。
+### 两种验证方式
 
-实测分歧（同义改写）：Lexical 0.474 vs Semantic 0.812 —— **存在结论相反的样本**。
+**1. Gold Set 反向测量**（查误报）
 
----
+```
+$ python -m eval.evaluators.validation
 
-### 4. 三态而非两态
-
-```python
-Status.PASSED / Status.FAILED / Status.ERROR
+已人工复核     30（100%）
+混淆矩阵
+  TP（正确检出幻觉）  14
+  FN（漏报·最危险）   0
+  FP（误报）           1
+  Accuracy   96.7%
+  Precision  93.3%
+  Recall     100.0%   ← 漏报控制
+  FPR         6.2%
 ```
 
-**解决的真实缺陷**：旧实现中 API 调用失败 → 空输出 → 幻觉检测首行 `if not output.strip(): return True` 判为"无幻觉" → **API 失败被当成通过**。
+**2. 变异测试**（查漏报）
 
-`error` 不计入通过率分母 —— error 是"评测未完成"，不是"质量表现"。
+把正确答案故意改坏，看评测器能否发现：
+
+```
+$ python -m eval.mutation
+
+样本用例 27 / 变异总数 186 / 检出率 0.9533
+
+类型           应检出   检出   漏报   检出率
+答案替换           26    26     0     100%
+追加伪事实         52    52     0     100%
+数字篡改            6     6     0     100%
+否定翻转           13    12     1      92%
+实体调换            8     6     2      75%
+因果倒置            1     0     1       0%   ← 盲区
+时序错乱            1     0     1       0%   ← 盲区
+```
+
+> `因果倒置` 与 `时序错乱` 的分母是 1，检出率 0% 意味着
+> **字符级覆盖率算法对这类语义倒置无能为力**。这是真实盲区，不回避。
 
 ---
 
-### 5. 分层质量门禁
+## 指标定义
 
-| 层 | 含义 | 特点 |
+每个指标都写清了**算法、局限**。完整说明见 `python -m eval.thresholds`。
+
+| 指标 | 算法 | 局限 |
 |---|---|---|
-| `critical` | 能力底线 | 严格（域外拒答 = 100%）|
-| `quality` | 质量目标 | 允许小幅不达标 |
-| `performance` | 性能与成本 | 按项目调整 |
-| `stability` | 稳定性 | 按场景调整 |
+| `faithfulness` | 回答拆分为原子声明，逐条计算实词覆盖率 | 无法识别「换个说法说同一错误」 |
+| `hallucination_rate` | 存在无支撑声明的用例占比 | 按用例计数，不按声明计数 |
+| `answer_correctness` | 必需事实覆盖率 − 命中禁止事实 | 字符级匹配，同义改写会低估 |
+| `completeness` | required_facts 覆盖比例 | 依赖标注质量，标注不全会误判 |
+| `relevance` | 事实覆盖率 → 参考答案相似度 → 上下文相似度（三级） | 跑题检测依赖实词交集 |
+| `refusal_accuracy` | 区分该拒答与过度拒答 | 依赖拒答措辞的统一词表 |
+| `consistency` | 同一问题重复调用的内容 Jaccard | 样本仅取前若干条 answer 类用例 |
+| `error_rate` | error 条数 / 总条数（**分母含 error**） | 与 pass_rate 分母不同，勿混用 |
+| `p95_latency_ms` | 线性插值分位数 | 样本量小时区分度有限 |
 
-**门禁失败必须可诊断**：
+**关于 `pass_rate` 与 `error_rate` 的分母**：
 
 ```
-[answer_correctness] 未达标：0.8500 >= 0.9
-失败样本：case-01, case-02, case-03
-
-修复方向：
-  answer_correctness: 完善 required_facts 标注；检查被测系统 Prompt
+pass_rate  的分母排除 error  → API 全挂时是 None（没测成），不是 0
+error_rate 的分母包含 error  → API 全挂时是 1.0，不是 0
 ```
+
+这两个设计都来自同一个教训：**「没测到」和「测了但没通过」必须区分**。
+混为一谈会让系统越坏，CI 反而越绿。
 
 ---
 
-### 6. 缺陷闭环
+## 阈值从哪来
+
+`eval/thresholds.py` 里的 15 项阈值是**工程初始值**，
+来源只有两类，都写在代码里：
+
+- `heuristic` —— 领域内常见做法，无本地实验支撑
+- `observed` —— 在 30 条 Gold Set 上观察后手工设定
+
+**它们不是从大规模标注实验拟合出来的。** 校准工具提供数据参考：
 
 ```
-Bug 发现 → 复现 → 固化用例 → 修复 → 回归测试 → CI 保护
+$ python -m eval.calibrate
+
+阈值    准确率   精确率   召回率     F1   误报率   漏报率
+0.45    86.7%   91.7%    78.6%  84.6%    6.2%   21.4%
+0.60    90.0%   92.3%    85.7%  88.9%    6.2%   14.3%   ← 当前值
+0.75    83.3%   80.0%    85.7%  82.8%   18.8%   14.3%
+0.80    86.7%   81.2%    92.9%  86.7%   18.8%    7.1%
+
+F1 最优：阈值 0.55
+没有任何阈值能把漏报率压到 5% 以下
 ```
 
-**16 条历史缺陷全部有档案**：`discovered_in` / `root_cause` / `fix_summary` / `verify_by`。
-
-| 层 | 数量 |
-|---|---|
-| `evaluator_bug` | 7 |
-| `method_limit` | 5 |
-| `env_issue` | 4 |
-
-**9 条标为 `xfail` 而非通过** —— 明确声明"这 9 条不由声明级验证覆盖"，不假装通过。
+选阈值是**业务决策**，不是技术决策：误报和漏报的代价完全不对称。
+漏报到生产环境的代价通常远大于误报。
 
 ---
 
-### 7. 离线可运行
+## 测试数据
+
+| 数据集 | 条数 | 用途 | 标注状态 |
+|---|---|---|---|
+| `smoke` | 8 | CI每次提交 | 作者构造 |
+| `full` | 19 | 手动触发、发版前 | 作者构造 |
+| `extended` | 17 | 覆盖**测试类型**（总结/条件/数据异常/边界/对抗） | 作者构造 |
+| `coverage` | 30 | 覆盖**推理难度**（单事实/多跳/对比/拒答/诱导） | 作者构造 |
+| `gold_set` | 30 | 验证评测器自身 | **已人工复核** |
+
+评测用例合计 **74 条**（不含 gold_set——后者是标注数据，不是被测系统的用例）。
+
+`extended` 与 `coverage` 的分工是**两条线交叉**：
+
+```
+extended  按「测试类型」切  → 这个系统会遇到哪些形状的输入
+coverage  按「推理难度」切  → 同一形状下，推理复杂度到哪一档
+```
+
+`coverage` 的五类配比与真实表现：
+
+| 意图分组 | 条数 | 实测通过率 |
+|---|---|---|
+| 单事实精确提问 | 8 | 75% |
+| 多跳推理 | 6 | **50%** |
+| 对比类 | 5 | 40% |
+| 超纲与拒答 | 7 | 86% |
+| 诱导与边界 | 4 | **25%** |
+
+难度梯度清晰：拒答类基本能做对，多跳与对比明显更难，
+而「诱导与边界」最差——夹带危险请求的题模型会犹豫，
+被字数格式诱导的题会照做。
+
+这说明数据集有鉴别力：不是所有题都一样难度。
+
+---
+
+## CI 怎么跑
+
+拆成三档，职责互不重叠：
+
+| Workflow | 触发时机 | 跑什么 | 需要 Key |
+|---|---|---|---|
+| `test.yml` | 每次提交、每个 PR | 单元 + 接口 + 异常 + 性能 | 否 |
+| `evaluation.yml` | PR / push / 每日定时 | 真实评测 + 门禁 | 是 |
+| `regression.yml` | push main / 每日定时 | 变异测试 + 退化检测 | 部分 |
+
+**PR 只跑 smoke**：真实 API 按 token 计费，PR 上跑全部既慢又贵。
+更全面的评测放在合并后。
+
+**门禁失败不让 CI 变红**。这是刻意设计：
+
+被测的 RAG 系统确实有幻觉（实测幻觉率 12.5%），评测器把它拦下是**正确行为**。
+若门禁失败就 CI 失败，CI 会长期是红，久而久之没人再看，等于没有门禁。
+
+真正让 CI 失败的是退出码 `2/3/4` —— 配置错误、数据错误、运行错误，
+这些是**链路坏了**，不是质量问题。
+
+---
+
+## 本地测试怎么跑
+
+用 marker 分区，按代价递增：
 
 ```bash
-python -m eval run --dataset smoke --mock    # 4 秒，无需 API
+pytest                    # 默认：离线，约 30 秒
+pytest -m api             # 接口测试
+pytest -m perf            # 性能测试
+pytest -m live            # 真实 API（需 Key）
 ```
 
-Mock Provider 提供 12 种故障注入：正确答案、错误答案、幻觉、实体调换、拒答、空回答、超时、API 错误、非法 JSON、上下文冲突等。
+marker 由 `tests/conftest.py` **自动分类**，依据是：
+测试所在目录、是否用到 live fixture、源码里是否声明了 `needs_api`。
+不需要给 500+ 个测试逐个加装饰器，也不会因为漏标而跑到错误阶段。
 
-**CI 无密钥时明确跳过真实评测，而非假装成功。**
+---
+
+## 已知限制
+
+这一节是本项目最有价值的部分。
+
+### 评测器本身的局限
+
+1. **Gold Set 存在循环论证**
+   30 条样本的题目、答案、标签、以及评测器的检测规则**全部出自同一作者**。
+   评测器的规则是为检出这些样本的缺陷而设计的，用同一批数据验证它，
+   结论天然偏乐观。**这是本项目最大的方法论局限。**
+
+2. **没有第二位标注者**
+   缺标注者间一致性（IAA）指标，无法量化标注质量本身。
+
+3. **样本量太小**
+   30 条 Gold Set 上「没有任何阈值能把漏报率压到 5% 以下」。
+   这个数字应该理解为「样本不足」，而不是「阈值都调不好」。
+
+4. **变异测试的盲区**
+   因果倒置、时序错乱检出率 0%。字符级覆盖率对语义倒置无能为力。
+
+### 被测系统的局限
+
+5. **检索是词频匹配，不是向量检索**
+   实测召回率约 82%，扩展集的总结类问题经常检索不到相关片段。
+   这是最明显的瓶颈，也是最该先改的地方。
+
+6. **模型会顺着问题惯性编造**
+   追问式提问（「那测试人员的工作是什么？」）容易诱导模型编造资料外的内容。
+
+7. **上下文冲突检测能力有限**
+   只支持「冒号型」句式。否定型冲突（`A关注Y` vs `A完全不关注Y`）
+   因主体抽取依赖 SVO 语序而漏检——已在测试中如实标注为已知局限。
+
+8. **LLM Judge 未在 CI 中启用**
+   偏差控制手段（一致性检查、位置偏好检测）已实现但未接线，
+   且 Judge 与被测系统同模型，自我偏好风险未验证。
+
+9. **Embedding 语义评测默认关闭**
+   `fact_coverage` 阈值 0.65 调过但走的是死代码路径，CI 未启用。
+
+### 工程上的局限
+
+10. **未配置 branch protection**
+    门禁只在 Actions 内生效，**尚未真正阻断 PR 合并**。
+    要真正拦住退化版本，需要在仓库设置里开启保护规则。
+
+11. **性能测试用 Mock 为主**
+    真实并发压测需要手动启动服务，CI 中未运行。
+
+12. **覆盖率未统计**
+    没有 pytest-cov，看不到测试覆盖了哪些代码路径。
 
 ---
 
 ## 项目结构
 
 ```
-eval/
-├── schemas/         Dataset / EvalCase / GroundTruth / CaseResult / EvalReport
-├── datasets/        smoke(8) / full(19) / regression(16) / gold_set(30)
-├── providers/       SUT 抽象 + RAGProvider + MockProvider(12 场景)
-├── evaluators/      faithfulness / correctness / semantic / judge / validation
-├── quality_gate/    分层门禁 + 诊断
-├── reporting/       HTML / JSON / CSV
-├── cli/             命令行入口
-├── runner.py        评测编排
-├── baseline.py      基线对比
-└── mutation.py      变异测试
-
-configs/quality_gate.yaml
-tests/{unit,evaluators,regression}/
+llm_eval_project/
+├── app/                      # 被测系统
+│   ├── rag.py                   RAG 问答（Retriever + LLM）
+│   └── server.py                HTTP 接口层（零依赖）
+│
+├── eval/                     # 评测框架
+│   ├── providers/                Provider 抽象：RAG / HTTP / Mock
+│   ├── evaluators/               幻觉 / 正确性 / 拒答 / 语义 / Judge
+│   ├── datasets/                 smoke / full / extended / gold_set
+│   ├── metrics/                  统计层（分位数、错误率）
+│   ├── quality_gate/             分层门禁
+│   ├── reporting/                HTML / CSV / JSON 报告
+│   ├── thresholds.py             阈值集中管理
+│   ├── baseline.py               基线对比
+│   ├── mutation.py               变异算子
+│   ├── calibrate.py              阈值校准工具
+│   └── config_loader.py          配置加载
+│
+├── tests/                    # 测试
+│   ├── api/                      接口契约
+│   ├── negative/                 异常与边界
+│   ├── integration/              端到端
+│   ├── performance/              性能与并发
+│   ├── mutation/                 变异测试
+│   ├── evaluators/               评测器单测
+│   ├── regression/               历史缺陷回归锁
+│   └── unit/                     数据结构单测
+│
+├── .github/workflows/        # CI（三档）
+│   ├── test.yml                  单元 + 接口 + 异常 + 性能
+│   ├── evaluation.yml            真实评测 + 门禁
+│   └── regression.yml            变异 + 退化检测
+│
+├── knowledge/                # 知识库
+├── goldset/                  # 人工标注数据
+├── configs/                  # 门禁阈值
+├── pytest.ini                # marker 分区
+└── requirements.txt
 ```
 
-详见 [`docs/architecture.md`](docs/architecture.md)。
+**运行依赖：0 个第三方库**（标准库实现，包括 YAML 解析）。
+开发依赖只有 `pytest`。
 
 ---
 
-## 运行命令
+## 这个项目不是什么
 
-| 命令 | 说明 |
-|---|---|
-| `python -m eval config` | 查看当前生效的 API 配置（密钥脱敏） |
-| `python -m eval list` | 列出可用数据集 |
-| `python -m eval validate --dataset full` | 验证数据集 |
-| `python -m eval run --dataset smoke` | 执行评测 |
-| `python -m eval run --dataset smoke --mock` | 离线评测 |
-| `python -m eval run --dataset full --judge --semantic` | 增强评测 |
-| `python -m eval run --dataset smoke --save-baseline` | 保存基线 |
-| `python -m eval run --dataset smoke --compare-baseline` | 检测退化 |
-| `python -m eval report --input reports/eval_results.json` | 重新生成报告 |
-| `python -m eval gate --input reports/eval_results.json` | 只跑门禁 |
-| `python -m eval case --id smoke_in_01` | 用例详情 |
-| `python -m eval.evaluators.validation` | 评测器可靠性验证 |
-| `python -m eval.datasets.regression` | 回归集统计 |
-| `python -m eval.mutation` | 变异测试 |
+- **不是**工业级 LLM 评测平台
+- **不是**通用测试框架
+- **不是**模型训练 / 微调工具
+- **没有**做到 100% 准确率——做不到，字符级算法有先天盲区
 
-**退出码**：`0` 通过 / `1` 门禁失败 / `2` 配置错误 / `3` 数据错误 / `4` 运行错误
-
----
-
-## CI 策略
-
-| 触发 | 数据集 | 密钥需求 |
-|---|---|---|
-| PR | smoke | 无（离线测试始终执行）|
-| push main | smoke + full | 可选 |
-| 定时（每日） | full | 可选 |
-| 手动 | 可选 | 可选 |
-
-四个 Job：离线单元测试 / Mock 评测链路 / 评测器自检 / 真实 API 评测。
-
----
-
-## 已知局限
-
-**这些是真实的未解决问题，不隐藏。**
-
-| 局限 | 影响 |
-|---|---|
-| **Gold Set 存在循环论证** | 样本与标签均由项目作者构造，指标可信度受限 |
-| **Judge 会漏判实体调换** | 实测 score=0.72 但 hallucination=False |
-| **Judge 与被测系统同模型** | 自我偏好未验证 |
-| 声明级验证对对比型回答误报 | 跨上下文整合的句子易被误判 |
-| 冲突检测依赖 SVO 语序 | 主谓倒装场景漏检 |
-| 检索仍是关键词匹配 | 命中率 68% 是瓶颈 |
-| 未开 branch protection | CI 失败不能真正阻止合并 |
-
-**真正的评测器可靠性验证需要**：他人撰写的答案 + 至少两人独立标注 + 200+ 样本。
-
-详见 [`docs/evaluation.md`](docs/evaluation.md) 第八节。
-
----
-
-## 文档
-
-| 文档 | 内容 |
-|---|---|
-| [`docs/architecture.md`](docs/architecture.md) | 架构、分层、关键设计决策、扩展点 |
-| [`docs/metrics.md`](docs/metrics.md) | 12 项指标的定义/算法/阈值/优缺点/已知误差 |
-| [`docs/dataset.md`](docs/dataset.md) | 12 类别规范、Ground Truth 五要素、增补原则 |
-| [`docs/evaluation.md`](docs/evaluation.md) | 评测方法、为什么这么设计、怎么证明可靠 |
-| [`docs/troubleshooting.md`](docs/troubleshooting.md) | 常见问题与排查 |
-
----
-
-## API 配置
-
-推荐用项目内配置文件，只对本项目生效：
-
-```cmd
-copy env.example .env
-```
-
-打开 `.env`，填入 key 后保存即可，**不需要重开终端**。
-
-```
-EVAL_API_KEY=你的key
-EVAL_BASE_URL=https://open.bigmodel.cn/api/paas/v4
-EVAL_MODEL_NAME=glm-4-flash
-```
-
-验证是否生效：
-
-```cmd
-python -m eval config
-```
-
-**为什么用 `EVAL_` 前缀而不是常见的 `OPENAI_`**：
-`OPENAI_API_KEY` 这组名字被所有兼容 OpenAI 协议的服务商沿用，
-本机上其他 AI 工具（某些 Provider 切换工具）也会往系统环境变量里写同名值。
-共用名字会导致互相覆写——你在那边切一次供应商，这边评测就连错服务了。
-本项目改用带 `EVAL_` 前缀的专属变量名，两边彻底隔离。
-
-程序仍然兼容 `OPENAI_*` 变量，所以 GitHub Actions 上的既有 secrets 无需改动。
-
-可选：用系统环境变量（不推荐，会与其他工具冲突）
-
-```cmd
-setx EVAL_API_KEY "你的key"
-```
-
-> `setx` 只对新开的命令行窗口生效。
-
----
-
-## 测试
-
-```bash
-# 全部（需 API）
-python -m pytest tests/ -v
-
-# 仅离线测试（无需 API）
-python -m pytest tests/ \
-  --ignore=tests/evaluators/test_semantic.py \
-  --ignore=tests/evaluators/test_judge.py \
-  --ignore=tests/test_quality_gate.py -v
-```
-
----
-
-## 设计原则
-
-1. **不伪造数据** —— 指标不可用时记 `unavailable`，不填 0
-2. **不假装通过** —— 未覆盖的缺陷标 `xfail`，不标绿
-3. **失败必须可诊断** —— 门禁失败要说清哪、差多少、怎么修
-4. **解耦** —— 换 SUT 不改评测框架；换业务不改代码
-5. **诚实记录局限** —— 已知问题写进文档，不藏
-
----
-
-## 快速验证
-
-刚clone 下来想先确认能跑？看 [`QUICKSTART.md`](QUICKSTART.md)，5 分钟完成验证。
-
-**最快的确认方式**（无需 API key）：
-```bash
-python -m eval run --dataset smoke --mock
-```
-
-[English README](./README_EN.md) | [快速验证](./QUICKSTART.md)
-
----
-
-## License
-
-MIT
-
----
-
-## 快速验证
-
-刚clone 下来想先确认能跑？看 [`QUICKSTART.md`](QUICKSTART.md)，5 分钟完成验证。
-
-**最快的确认方式**（无需 API key）：
-```bash
-python -m eval run --dataset smoke --mock
-```
-
-[English README](./README_EN.md) | [快速验证](./QUICKSTART.md)
-
----
-
-## License
-
-MIT
+它是一个**能跑通、能复现、能说清边界**的测试开发项目。

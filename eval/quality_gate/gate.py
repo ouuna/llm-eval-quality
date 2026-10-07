@@ -29,16 +29,38 @@ import os
 import sys
 import json
 
-# 复用已有的零依赖 YAML 解析器（PyYAML 存在时其会自动优先使用）
-sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "tests"))
-from config_loader import _load_yaml_text  # noqa: E402
+# 复用已有的零依赖 YAML 解析器（PyYAML 存在时其会自动优先使用）。
+#
+# 早先这里用 sys.path.insert 把 tests/ 塞进路径再 import config_loader，
+# 等于让生产代码反向依赖测试目录 —— 方向是颠倒的。
+# config_loader 现在住在 eval/ 下，依赖方向恢复正常。
+sys.path.insert(0, os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
+from eval.config_loader import _load_yaml_text  # noqa: E402
 
 
 # ============================================================
 # 配置
 # ============================================================
+
+# 哪些层的指标「不可用」时必须判失败。
+#
+# 为什么只对 critical 层这么严
+# ----------------------
+# critical 层是「不可以不知道」的安全底线：
+# 幻觉率、有据性、拒答率、回归通过率。
+# 这些指标如果算不出来，说明评测本身没跑成，
+# 而不是「质量达标」——放行等于把系统坏掉说成通过。
+#
+# 其余层（quality / performance / stability）保持放行，
+# 因为它们的不可用往往是可预期的：
+# 比如 avg_cost 在 Provider 不返回 token 时就是 None，
+# 这不代表出了故障。强行拦下只会制造大量误报，
+# 反而让人习惯性地忽略门禁结果。
+#
+# 任何一项都可以在配置里显式写fail_on_unavailable 覆盖这个默认。
+CRITICAL_UNAVAILABLE_FAILS = ("critical",)
+
 DEFAULT_GATE_CONFIG = {
     "critical": {
         "hallucination_rate": {"max": 0.05,
@@ -49,8 +71,11 @@ DEFAULT_GATE_CONFIG = {
                     "desc": "有据性必须高于此值"},
         "answer_correctness": {"min": 0.90,
                          "desc": "答案正确性必须高于此值"},
-        "regression_pass_rate": {"min": 1.00,
-                           "desc": "回归用例必须 100% 通过"},
+        # 调用错误率。原先这里写的是 regression_pass_rate，
+        # 但代码从未产出该指标，等于一条永远不会被触发的规则。
+        # 换成真正会被计算的 error_rate。
+        "error_rate": {"max": 0.02,
+                   "desc": "调用错误率上限（超时/5xx/格式错误）"},
     },
     "quality": {
         "overall_pass_rate": {"min": 0.95, "desc": "总体通过率"},
@@ -116,7 +141,14 @@ class GateCheck:
     def message(self) -> str:
         """人类可读的诊断信息"""
         if not self.available:
-            return f"[{self.name}] 跳过：{self.skip_reason}"
+            # 这里必须区分「放行」和「失败」。
+            #
+            # 一律写「跳过」会与实际判定矛盾：critical 层指标缺失时
+            # passed=False，门禁已经因此失败了，报告却说「跳过」。
+            # 排查的人看到「跳过」会以为这条无关紧要，
+            # 于是去找别的原因——方向直接被带偏。
+            verdict = "失败（按不可用处理）" if not self.passed else "跳过"
+            return f"[{self.name}] {verdict}：{self.skip_reason}"
 
         if self.passed:
             return (f"[{self.name}] 通过：{self.current_value:.4f} "
@@ -193,16 +225,54 @@ class QualityGate:
 
         value = metrics.get(name)
 
-        # 指标不可用
+        # ---- 指标不可用 ----
+        #
+        # 这里曾无条件passed=True，理由是「没数据就别管」。
+        # 但那等于给评测系统开了一扇后门：
+        #
+        #   · API Key 失效→ 全部调用失败 → 指标全为 None → 门禁全绿
+        #   · Embedding 服务挂了 → groundedness 不可用 → 门禁全绿
+        #   · 评测器自身抛异常 → 同上
+        #
+        # 也就是说「系统坏得越彻底，CI 越绿」。
+        # 这与项目里Status.ERROR 不计入通过率分母的设计初衷
+        # 完全矛盾——那边刚堵住的洞，这边又开了。
+        #
+        # 现在改为：critical 层的指标不可用 = FAIL。
+        # 其余层默认仍然放行，但必须显式声明这个取舍，
+        # 并在配置里提供 opt_out，允许明确豁免某项。
         if value is None:
+            if threshold is None:
+                # 没配阈值，本来就不参与判定，放行合理
+                return GateCheck(
+                    name=name, layer=layer, passed=True, current_value=None,
+                    threshold_value=None, comparison=comparison,
+                    description=rule.get("desc", ""),
+                    available=False,
+                    skip_reason="无阈值配置，不参与判定",
+                    sample_count=0,
+                )
+
+            fail_on_unavailable = bool(
+                rule.get("fail_on_unavailable",
+                         layer in CRITICAL_UNAVAILABLE_FAILS))
+
+            reason = (
+                f"指标不可用（当前值None）"
+                f"——无法判定是否达标，按{'失败' if fail_on_unavailable else '放行'}处理"
+            )
+
             return GateCheck(
-                name=name, layer=layer, passed=True, current_value=None,
+                name=name, layer=layer,
+                passed=not fail_on_unavailable,
+                current_value=None,
                 threshold_value=threshold, comparison=comparison,
                 description=rule.get("desc", ""),
                 available=False,
-                skip_reason=("指标未提供或不可用（按需配置此项门禁）"
-                             if threshold is not None else "无阈值配置"),
-                sample_count=0,
+                skip_reason=reason,
+                # 不可用但被判失败时，必须给出可行动的信息
+                failed_samples=failed_samples.get(name, []),
+                sample_count=metrics.get(f"{name}_count", 0),
             )
 
         if comparison == "min":
@@ -274,7 +344,8 @@ class GateReport:
         lines.append("=" * 68)
         lines.append(f"结论：{'PASSED' if self.passed else 'FAILED'}")
         lines.append(f"检查项：{s['total_checks']}  "
-                     f"失败 {s['failed']}  跳过 {s['skipped']}")
+                     f"失败 {s['failed']}  "
+                     f"不可用 {s['skipped']}")
         lines.append("")
 
         for layer, checks in self.by_layer().items():
@@ -286,7 +357,12 @@ class GateReport:
                     icon = "  ✓" if c.passed else "  ✗"
                     lines.append(f"  {icon} {c.message}")
                 else:
-                    lines.append(f"  - {c.name}（跳过）")
+                    # 不可用项一律显示「跳过」会掩盖问题：
+                    # critical 层缺失时门禁已判FAILED，
+                    # 这里却显示「跳过」，读者会以为与结论无关。
+                    # 所以按实际判定结果区分符号。
+                    icon = "  ✗" if not c.passed else "  -"
+                    lines.append(f"{icon} {c.message}")
             lines.append("")
 
         if self.failed_checks:
@@ -300,7 +376,7 @@ class GateReport:
                 "faithfulness": "检查检索召回率；提升上下文相关性",
                 "answer_correctness": "完善 required_facts 标注；"
                                 "检查被测系统 Prompt",
-                "regression_pass_rate": "查看失败用例，可能是代码回退",
+                "error_rate": "查看失败用例：超时、5xx、响应格式错误，先确认是服务问题还是调用方式问题",
                 "completeness": "补充 key_points 标注；检查是否只答了一半",
                 "relevance": "检查检索是否召回正确片段",
                 "retrieval_hit_rate": "扩充知识库；改进检索策略",
@@ -329,7 +405,7 @@ if __name__ == "__main__":
         "refusal_accuracy": 0.98,
         "faithfulness": 0.92,
         "answer_correctness": 0.85,     # 故意不达标
-        "regression_pass_rate": 1.0,
+        "error_rate": 0.0,
         "overall_pass_rate": 0.91,      # 故意不达标
         "completeness": 0.95,
         "relevance": 0.78,

@@ -220,9 +220,55 @@ class TestStatistics:
     def test_empty_report_is_valid(self):
         report = EvalReport(dataset_name="t", dataset_tier="smoke", model="m")
         assert report.total == 0
-        assert report.pass_rate == 0.0
+        # 空报告的通过率必须是 None 而不是 0.0（2026-10-07 修正）。
+        #
+        # 0.0 的含义是「都测了，无一通过」；
+        # None 的含义是「一条都没测成」。
+        # 早先返回 0.0，于是 API Key 失效导致全部调用失败时，
+        # 报告显示「通过率 0%」，看起来像质量极差——
+        # 但真正的问题是「什么都没测到」，
+        # 排查方向完全不一样：前者该改模型，后者该查配置。
+        assert report.pass_rate is None
         assert report.failure_pareto() == []
         assert report.latency_stats()["available"] is False
+
+    def test_全部error时通过率为None(self):
+        """
+        全部调用失败时，通过率必须是无定义而非 0。
+
+        这是 pass_rate 分母排除 error 的必然结果：
+        一条都没真正评测过，就不该有「通过率」这个数字。
+        """
+        from eval.schemas.result import CaseResult, Status
+
+        report = EvalReport(dataset_name="t", dataset_tier="smoke", model="m")
+        for i in range(3):
+            c = CaseResult(case_id=f"e{i}", status=Status.ERROR.value)
+            c.error = "模拟超时"
+            report.cases.append(c)
+
+        assert report.errors == 3
+        assert report.passed == 0 and report.failed == 0
+        assert report.pass_rate is None, \
+            "全部 error 时通过率应为 None（未评测），而非 0.0"
+
+    def test_部分error时分母排除它们(self):
+        """
+        混入 error 时，通过率的分母是「真正评测过的条数」。
+        """
+        from eval.schemas.result import CaseResult, Status
+
+        report = EvalReport(dataset_name="t", dataset_tier="smoke", model="m")
+        for i in range(2):
+            report.cases.append(
+                CaseResult(case_id=f"p{i}", status=Status.PASSED.value))
+        c = CaseResult(case_id="e", status=Status.ERROR.value)
+        c.error = "boom"
+        report.cases.append(c)
+
+        # 2 条通过 / 1 条error → 分母 2，通过率 1.0
+        assert report.pass_rate == 1.0, \
+            "error 不应拉低通过率——它代表「没测成」而非「没通过」"
 
 
 # ============================================================

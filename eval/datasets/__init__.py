@@ -13,6 +13,8 @@
 from eval.schemas.dataset import Dataset, validate_dataset
 from eval.datasets.smoke import DATASET as SMOKE
 from eval.datasets.full import DATASET as FULL
+from eval.datasets.extended import DATASET as EXTENDED
+from eval.datasets.coverage import DATASET as COVERAGE
 from eval.datasets import regression as _regression_module
 
 # 回归集有两种形态，用途不同：
@@ -24,11 +26,15 @@ REGRESSION_CASES = _regression_module.CASES
 REGISTRY = {
     "smoke": SMOKE,
     "full": FULL,
+    "extended": EXTENDED,
+    "coverage": COVERAGE,
 }
 
 TIER_DESCRIPTION = {
     "smoke": "快速回归集，CI 每次提交执行",
     "full": "完整评测集，手动触发或发版前执行",
+    "extended": "扩展评测集：总结/条件/数据异常/边界/对抗五类场景",
+    "coverage": "场景覆盖集：单事实/多跳/对比/拒答/诱导五类配比",
 }
 
 

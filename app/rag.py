@@ -23,18 +23,14 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from eval import env_loader
+from eval.config_loader import load_config, get as cfg_get
 
 API_KEY = env_loader.get_api_key()
 BASE_URL = env_loader.get_base_url()
 MODEL = env_loader.get_model_name()
-TIMEOUT = 60
-MAX_RETRY = 3
-
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "tests"))
 
 # ---------------- 加载配置 ----------------
 try:
-    from config_loader import load_config, get as cfg_get
     _CFG = load_config()
 except Exception:
     _CFG = {}
@@ -46,18 +42,55 @@ KNOWLEDGE_FILES = [
 ]
 TOP_K = cfg_get(_CFG, "system.top_k", 3)
 TEMPERATURE = cfg_get(_CFG, "model.temperature", 0.3)
+
+# 文档分隔符此前也是硬编码 "\n\n"，配置项形同虚设。
+# 换知识库时不同来源的分隔符可能不同（如 "\n### "），
+# 所以这里真正读配置，并把转义序列还原成真实字符
+# —— 写"\n\n" 在 YAML 双引号里会变成真换行，写 '\\n\\n' 才是两个字面量。
+_DOC_SEP_RAW = cfg_get(_CFG, "system.doc_separator", "\n\n")
+try:
+    DOC_SEPARATOR = _DOC_SEP_RAW.encode().decode("unicode_escape")
+except (UnicodeDecodeError, AttributeError):
+    DOC_SEPARATOR = _DOC_SEP_RAW
+
+# 超时与重试此前是模块级硬编码（TIMEOUT=60 / MAX_RETRY=3），
+# 而 config.yaml 里也写了model.timeout / model.max_retry ——
+# 两处并存，配置文件形同虚设。改到只认配置，删掉硬编码常量。
+#
+# 这样调整超时不必改代码，也让「配置能不能生效」变得可验证。
+TIMEOUT = cfg_get(_CFG, "model.timeout", 60)
+MAX_RETRY = cfg_get(_CFG, "model.max_retry", 3)
+CALL_INTERVAL = cfg_get(_CFG, "model.call_interval", 0.5)
+
 PROMPT_TEMPLATE_CFG = cfg_get(_CFG, "prompt.template", "")
 ENABLE_HALLUCINATION_GUARD = cfg_get(_CFG, "prompt.enable_hallucination_guard", True)
 
 
-def _check_env():
-    """提前校验 API 配置，让报错信息直接给出可复制的修复步骤"""
-    missing = [n for n, v in {
+def missing_config() -> list:
+    """
+    返回缺失的配置项列表，未缺失时返回空列表。
+
+    与 _check_env() 分开是刻意的：
+      · missing_config() 只报告，不抛异常
+      · _check_env() 报告并抛异常
+
+    HTTP 层需要前者——它要把「配置缺失」转成503，
+    而不是让异常冒泡变成 500。两者语义不同：
+    503 是「服务暂时不可用」，500 是「服务出错了」。
+
+    这也是为什么配置状态查询要独立成一个函数：
+    混在一起的话，HTTP 层只能捕获异常再猜是哪一类。
+    """
+    return [name for name, value in {
         env_loader.ENV_API_KEY: API_KEY,
         env_loader.ENV_BASE_URL: BASE_URL,
         env_loader.ENV_MODEL_NAME: MODEL,
-    }.items() if not v]
+    }.items() if not value]
 
+
+def _check_env():
+    """提前校验 API 配置，让报错信息直接给出可复制的修复步骤"""
+    missing = missing_config()
     if missing:
         raise EnvironmentError(
             f"缺少 API 配置：{', '.join(missing)}\n"
@@ -90,7 +123,7 @@ def load_knowledge():
 
         content = content.replace("\r\n", "\n").replace("\r", "\n")
 
-        for doc in content.split("\n\n"):
+        for doc in content.split(DOC_SEPARATOR):
             doc = doc.strip()
             if doc:
                 docs.append(doc)
@@ -226,13 +259,45 @@ def call_llm(prompt):
                 urllib.request.urlopen(req, timeout=TIMEOUT).read().decode("utf-8")
             )
             return resp["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            # 限流（429）与鉴权（401/403）不该用同一种方式重试：
+            # 前者等一会就好，后者再试多少次都一样，
+            # 白白耗掉 3 次调用和60 秒超时。
+            last_error = e
+            if e.code == 429 and attempt < MAX_RETRY:
+                wait = _retry_after(e) or CALL_INTERVAL * attempt
+                print(f"[WARN] 被限流（429），{wait:.1f}s 后重试"
+                      f"（第 {attempt} 次）")
+                time.sleep(wait)
+                continue
+            if e.code in (401, 403):
+                raise RuntimeError(
+                    f"鉴权失败（HTTP {e.code}）：请检查 API Key 是否正确、"
+                    f"是否已开通该模型权限。已重试 {attempt} 次，放弃。"
+                ) from e
+            if attempt < MAX_RETRY:
+                print(f"[WARN] 第 {attempt} 次调用失败（HTTP {e.code}），重试中...")
+                time.sleep(CALL_INTERVAL * attempt)
         except (urllib.error.URLError, TimeoutError, KeyError, IndexError) as e:
             last_error = e
             if attempt < MAX_RETRY:
                 print(f"[WARN] 第 {attempt} 次调用失败（{e}），重试中...")
-                time.sleep(2)
+                # 指数退避：原来固定 2 秒，连续失败时太密集
+                time.sleep(CALL_INTERVAL * (2 ** (attempt - 1)))
 
     raise RuntimeError(f"调用大模型失败，已重试 {MAX_RETRY} 次：{last_error}")
+
+
+def _retry_after(http_error):
+    """读取服务端建议的重试等待时间（秒），没有则返回 None"""
+    hdr = getattr(http_error, "headers", None)
+    if not hdr:
+        return None
+    try:
+        val = hdr.get("Retry-After")
+        return float(val) if val else None
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------
@@ -250,18 +315,50 @@ PROMPT_TEMPLATE = PROMPT_TEMPLATE_CFG or """你是软件测试领域的助手。
 
 请用中文简洁回答："""
 
+# 检索不到内容时的固定拒答措辞。
+#
+# 措辞的选择不是随意的：必须落在评测器
+# `evaluate_refusal` 的拒答标记词表内，否则会被判成
+# 「既没回答也没拒答」，即模型失能而非正确拒答。
+#
+# 查eval/evaluators/correctness.py 的 DEFAULT_REFUSAL_MARKERS
+# 与 faithfulness.py 的 refusal_markers 确认覆盖面。
+NO_CONTEXT_ANSWER = "参考资料中未提及该问题相关内容，无法回答。"
+
 
 def ask(question):
     """
     被测的 RAG 问答系统
 
     返回：(答案, 检索到的上下文列表)
+
+    异常处理
+    --------
+    这里曾经 `except: return "", contexts` —— 把调用失败伪装成
+    「正确地没话说出来」。后果是评测器把API 故障当成"模型拒答"，
+    判为通过：系统坏得越彻底，分数反而越高。
+
+    现在失败时抛出，由调用方（Provider）显式标记为 error。
+    「没检索到 → 拒答」与「调用失败」是两种完全不同的语义，
+    绝不能混成同一个空字符串。
     """
     docs = load_knowledge()
     contexts = retrieve(question, docs)
 
     if not contexts:
-        return "", []
+        # 检索不到内容时**明确拒答**，而不是返回空字符串。
+        #
+        # 早先这里 `return "", []`，理由是「没检索到就是没有答案」。
+        # 但空字符串对调用方是完全歧义的：
+        #   · 到底是真的没有依据，还是服务出问题了？
+        # 用户看到一片空白，无从判断。
+        #
+        # 这一点尤其重要，因为评测器的拒答检测靠的是
+        # 「未提及 / 没有相关 / 无法回答」这类**明确的拒答措辞**。
+        # 返回空串时，拒答检测会因为「本来就没回答」而无法区分，
+        # 于是域外问题看起来像是「模型没作答」而不是「模型正确拒答」。
+        # 把两种情况都变成空白，指标就失去了区分能力。
+        return NO_CONTEXT_ANSWER, []
 
     context_str = "\n\n".join(contexts)
 
@@ -274,11 +371,8 @@ def ask(question):
                   f"参考资料：\n{context_str}\n\n"
                   f"问题：{question}\n\n请用中文回答：")
 
-    try:
-        answer = call_llm(prompt)
-    except Exception as e:
-        print(f"[ERROR] 生成回答失败：{e}")
-        return "", contexts
+    # 失败不再吞掉：让 Provider 层显式标记 error
+    answer = call_llm(prompt)
 
     return answer, contexts
 

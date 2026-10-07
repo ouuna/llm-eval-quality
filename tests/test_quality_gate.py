@@ -32,6 +32,20 @@ from evaluator import (  # noqa: E402
     THRESHOLD_HALLUCINATION,
 )
 
+# 这些用例会真实调用 LLM（通过 tests/evaluator.py → app.rag），
+# 因此标记为 live：默认不跑，只有配置了 API Key 才跑。
+#
+# 为什么需要显式标记
+# ----------------
+# 它们的依赖（tests/evaluator.py + cases.csv）看不出「需要 API」，
+# 按目录判定的自动marker 机制会把它们归进 offline，
+# 结果默认运行时集体error：
+#     OSError: 缺少配置：OPENAI_API_KEY
+#
+# 显式标记优先于自动判定，所以这里写了 pytestmark。
+pytestmark = pytest.mark.live
+
+
 # ---- 用例从 cases.csv 加载，可由业务方维护，无需改代码 ----
 # 注意：在函数内延迟加载，避免 pytest 导入期执行导致路径解析异常
 CASES_FILE = os.path.join(PROJECT_ROOT, "cases.csv")

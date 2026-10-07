@@ -32,6 +32,9 @@ from eval.evaluators.faithfulness import detect_hallucination
 from eval.schemas.result import Severity, ViolationType
 from eval.datasets.gold_set import GoldSample
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))
+
 
 # ============================================================
 # 混淆矩阵
@@ -343,9 +346,72 @@ def _fmt(v: Optional[float]) -> str:
     return f"{v:.1%}"
 
 
-if __name__ == "__main__":
-    from eval.datasets.gold_set import SAMPLES, statistics as gold_stats_fn
+# ============================================================
+# 数据源
+# ============================================================
 
-    stats = gold_stats_fn(SAMPLES)
-    report = validate_evaluator(SAMPLES)
+# 人工标注结果的存放位置。
+#
+# 为什么不直接用代码里的 SAMPLES
+# ----------------------------
+# gold_set.py 里的 SAMPLES 是自动预填的模板，全部 reviewed=False，
+# 按设计不参与验证统计（is_usable 要求 reviewed=True）。
+# 真正的人工标注写在 goldset/gold_set.json 里。
+#
+# 早先这里直接 import SAMPLES，导致用户辛苦完成的标注从未被读取，
+# 验证永远返回 insufficient_data —— 而 reports/ 里那份漂亮的准确率
+# 是手工作业跑出来的，与代码实际行为不符。
+#
+# 这类「报告与代码不一致」比直接报错危险得多：
+# 它会让评测器看起来已经验证过了。
+DEFAULT_GOLD_SET_PATH = os.path.join(
+    PROJECT_ROOT, "goldset", "gold_set.json"
+)
+
+
+def resolve_gold_samples(path: str = None) -> tuple:
+    """
+    返回 (样本列表, 数据来源说明)。
+
+    优先读人工标注的 JSON；文件不存在时才退回内置模板，
+    并在来源说明里讲清楚用的是哪一个——不静默降级。
+    """
+    target = path or DEFAULT_GOLD_SET_PATH
+
+    if not os.path.exists(target):
+        from eval.datasets.gold_set import SAMPLES
+        return list(SAMPLES), (
+            f"内置模板（未找到 {target}）"
+            f"——全部未复核，无法作为真值"
+        )
+
+    try:
+        with open(target, "r", encoding="utf-8") as f:
+            samples = [GoldSample.from_dict(d) for d in json.load(f)]
+    except (OSError, ValueError, KeyError) as e:
+        from eval.datasets.gold_set import SAMPLES
+        return list(SAMPLES), (
+            f"内置模板（{target} 解析失败：{type(e).__name__}: {e}）"
+            f"——全部未复核，无法作为真值"
+        )
+
+    reviewers = {s.reviewed_by for s in samples if s.reviewed_by}
+    who = "、".join(sorted(reviewers)) if reviewers else "未署名"
+    return samples, f"{target}（复核者：{who}）"
+
+
+if __name__ == "__main__":
+    from eval.datasets.gold_set import statistics as gold_stats_fn
+
+    gold_samples, source = resolve_gold_samples()
+
+    print("=" * 66)
+    print("数据源")
+    print("=" * 66)
+    print(f"  {source}")
+
+    stats = gold_stats_fn(gold_samples)
+    report = validate_evaluator(gold_samples)
+    report["data_source"] = source
+
     print(format_validation_report(report, stats))

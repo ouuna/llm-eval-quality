@@ -22,10 +22,36 @@ import os
 import re
 import sys
 
-WORKFLOW_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    ".github", "workflows", "eval.yml",
-)
+PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))
+WORKFLOW_DIR = os.path.join(PROJECT_ROOT, ".github", "workflows")
+
+# 兼容旧引用（tests/test_check_workflow.py 等）
+WORKFLOW_PATH = os.path.join(WORKFLOW_DIR, "eval.yml")
+
+
+def all_workflow_paths():
+    """
+    返回所有 workflow 文件。
+
+    为什么改成扫描目录
+    ------------------
+    早先只检查 eval.yml 一个文件。CI 拆成
+    test.yml / evaluation.yml / regression.yml 之后，
+    新文件完全没有被检查——
+    而 workflow 语法错误会让**整个文件作废**，
+    不检查等于没部署过。
+
+    目录扫描还有个好处：新增 workflow 会自动纳入检查，
+    不需要改这里。
+    """
+    if not os.path.isdir(WORKFLOW_DIR):
+        return []
+    return sorted(
+        os.path.join(WORKFLOW_DIR, f)
+        for f in os.listdir(WORKFLOW_DIR)
+        if f.endswith((".yml", ".yaml"))
+    )
 
 # job 级 if 里不允许出现的上下文变量。
 # 报错原文：Unrecognized named-value: 'secrets'
@@ -192,7 +218,12 @@ def check_workflow(path=WORKFLOW_PATH):
     # 只检查 job 级 if 不够——本项目就栽在注释里：
     # 为了说明错误写法而写的注释，本身含 secrets 上下文，
     # 再次触发同一个错误。
+    # 只是列出坑 7 会漏掉「YAML 合法但语义错」的一类问题，
+    # 所以还要查表达式上下文与变量名一致性。
     issues.extend(_check_expression_contexts(lines))
+
+    # --- 坑 8：变量名别名与程序读取的名字不一致 ---
+    issues.extend(_check_secrets_mapping_consistency(lines))
 
     return issues
 
@@ -293,25 +324,134 @@ def _check_expression_contexts(lines):
     return issues
 
 
+# ============================================================
+# 变量名一致性检查
+# ============================================================
+
+# 项目程序真正会读取的配置变量名，与 eval/env_loader.py 保持一致。
+_KNOWN_CONFIG_VARS = (
+    "EVAL_API_KEY", "EVAL_BASE_URL", "EVAL_MODEL_NAME",
+    "EVAL_JUDGE_MODEL_NAME",
+    "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL_NAME",
+    "JUDGE_MODEL_NAME",
+)
+
+# 常见的「随手起的别名」：看起来像那么回事，实际程序读不到。
+_SUSPECT_ALIASES = ("KEY", "URL", "MODEL", "TOKEN", "SECRET", "APIKEY")
+
+
+def _step_run_body(lines, from_line):
+    """取出某个 step 之后、下一个 step 之前的全部内容"""
+    body = []
+    for line in lines[from_line:]:
+        stripped = line.strip()
+        if not stripped:
+            body.append("")
+            continue
+        indent = len(line) - len(line.lstrip())
+        # 遇到新的 step（缩进 6 且以 "- "开头）就停
+        if indent <= 6 and stripped.startswith("- "):
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
+def _check_secrets_mapping_consistency(lines):
+    """
+    检查 secrets 被映射成环境变量时，名字是否与程序读取的一致。
+
+    真实踩过的坑（2026-10，修 CI 失败时发现）
+    ------------------------------------------
+    「密钥检查」step 写成 KEY / URL / MODEL 三个别名，
+    只给 bash 做空值判断用，看着完全正常。
+    但同一个 step 里的 `python -m eval config` 读的是
+    EVAL_API_KEY / OPENAI_API_KEY —— CI 上又没有 .env 文件，
+    于是它认为「未配置」，返回退出码 2，整个 step 失败。
+
+    教训：给 shell 起的别名不会自动传给子进程。
+    只要一个 step 里既有 shell 判断又有 Python 程序在读环境变量，
+    两边用的变量名就必须一致。
+
+    这类bug 静态检查抓得到，但不去想就发现不了——
+    YAML 完全合法，GitHub 也不会给任何提示。
+    """
+    issues = []
+    seen = set()
+
+    for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        # 只处理形如「KEY: ${{ secrets.X }}」的映射
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*):\s*\$\{\{\s*secrets\.",
+                     stripped)
+        if not m:
+            continue
+
+        env_name = m.group(1)
+
+        if env_name.upper() not in _SUSPECT_ALIASES:
+            continue
+
+        # 别名本身不一定是错——只有当同一个 step 里
+        # 调了本项目 CLI（需要读环境变量）时才是错。
+        body = _step_run_body(lines, i + 1)
+        if not re.search(r"python\s+-m\s+eval\b", body):
+            continue
+
+        if env_name in seen:
+            continue
+        seen.add(env_name)
+
+        issues.append(Issue(
+            i,
+            f"环境变量 {env_name} 是给 shell 判断用的别名，"
+            f"但同一个 step 里调用了 `python -m eval`——"
+            f"别名不会自动传给子进程，程序读不到它。"
+            f"请把 secrets 直接映射到 EVAL_API_KEY / "
+            f"OPENAI_API_KEY 这类程序认识的名字"))
+
+    return issues
+
+
 def main():
-    issues = check_workflow()
+    paths = all_workflow_paths()
 
-    print("=" * 62)
+    print("=" * 66)
     print("GitHub Actions workflow 检查")
-    print("=" * 62)
-    print(f"文件：{WORKFLOW_PATH}")
+    print("=" * 66)
 
-    if not issues:
-        print("\n检查通过：未发现上述常见语法问题")
-        print("=" * 62)
+    if not paths:
+        print(f"未找到任何 workflow 文件（目录：{WORKFLOW_DIR}）")
+        return 1
+
+    total_issues = 0
+
+    for path in paths:
+        issues = check_workflow(path)
+        name = os.path.basename(path)
+        total_issues += len(issues)
+
+        if not issues:
+            print(f"  [通过] {name}")
+            continue
+
+        print(f"  [问题] {name}（{len(issues)} 项）")
+        for issue in issues:
+            print(f"      {issue}")
+
+    print("=" * 66)
+
+    if total_issues == 0:
+        print(f"全部 {len(paths)} 个 workflow 检查通过")
         return 0
 
-    print(f"\n发现 {len(issues)} 个问题：")
-    for issue in issues:
-        print(str(issue))
-    print("\n提示：workflow 语法错误会让整个文件作废，")
+    print(f"\n共发现 {total_issues} 个问题")
+    print("提示：workflow 语法错误会让**整个文件**作废，")
     print("      表现为 CI 瞬间失败（1 秒左右），而非某个 job 变红。")
-    print("=" * 62)
+    print("      所以任何一个文件有问题，那一档 CI 都完全不会跑。")
+    print("=" * 66)
     return 1
 
 

@@ -1,0 +1,20 @@
+{
+  "metrics": {
+    "overall_pass_rate": 0.25,
+    "hallucination_rate": 0.125,
+    "refusal_accuracy": 0.75,
+    "faithfulness": 0.9375,
+    "answer_correctness": 0.75,
+    "completeness": 0.75,
+    "relevance": 0.375,
+    "retrieval_hit_rate": 0.5,
+    "consistency": 0.9822,
+    "score_std": 0.0251,
+    "p95_latency_ms": 1474
+  },
+  "meta": {
+    "model": "glm-4-flash",
+    "dataset": "smoke",
+    "time": "2026-10-07 01:30:06"
+  }
+}

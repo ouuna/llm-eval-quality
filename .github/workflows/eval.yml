@@ -225,33 +225,44 @@ jobs:
 
       - name: 密钥检查
         id: keycheck
-        # CI 里继续使用 OPENAI_* 变量名（secrets 已按此配置，无需改动）。
-        # 这同时验证了向后兼容路径：本地推荐用 EVAL_* 隔离环境变量，
-        # 但程序读 OPENAI_* 依然有效。
+        # 变量名必须和 env_loader 真正读取的名字一致。
         #
-        # 密钥判断必须放在 step 级：job 级 if 在解析文件时就求值，
-        # 那时 secrets 尚未注入。step 级则已可用。
+        # 这里踩过的坑：早先这步写的是 KEY / URL / MODEL 三个别名，
+        # 只给 bash 做空值判断用，看着没问题。但同一 step 里那句
+        # `python -m eval config` 读的是 EVAL_API_KEY / OPENAI_API_KEY，
+        # CI 上又没有 .env（被 gitignore），于是它认为"未配置"，
+        # 返回退出码 2，整个 step 失败。
         #
-        # 语义是「明确跳过」而非「假装成功」：无密钥时输出 warning
-        # 并让后续评测步骤跳过，而不是让 job 变绿假装跑过。
+        # 教训：给 shell 起的别名不会自动传给子进程。
+        # 变量名要么统一，要么在脚本里显式导出。
         env:
-          KEY: ${{ secrets.OPENAI_API_KEY }}
-          URL: ${{ secrets.OPENAI_BASE_URL }}
-          MODEL: ${{ secrets.OPENAI_MODEL_NAME }}
+          EVAL_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          EVAL_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          EVAL_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
         run: |
-          if [ -z "$KEY" ] || [ -z "$URL" ] || [ -z "$MODEL" ]; then
+          if [ -z "$EVAL_API_KEY" ] || [ -z "$EVAL_BASE_URL" ] \
+          || [ -z "$EVAL_MODEL_NAME" ]; then
             echo "::warning::未配置完整的 API secrets，跳过真实 API 评测"
+            echo "在仓库 Settings → Secrets 中补齐 OPENAI_API_KEY /"
+            echo "OPENAI_BASE_URL / OPENAI_MODEL_NAME 后重新推送即可。"
             echo "skip=true" >> $GITHUB_OUTPUT
             exit 0
           fi
-          echo "模型：$MODEL"
-          echo "接口：$URL"
+          echo "模型：$EVAL_MODEL_NAME"
+          echo "接口：$EVAL_BASE_URL"
           echo "数据集：${{ steps.ds.outputs.value }}"
-          echo "---"
-          python -m eval config
           echo "skip=false" >> $GITHUB_OUTPUT
 
-      - name: 执行质量评测
+      - name: 确认项目能读到配置
+        # 单独一步，且用 if: always()。
+        #
+        # 它的作用是把"配置没读到"这件事和"门禁没通过"彻底分开：
+        # 上一 step 只判断 secret 存不存在，这一步才验证程序真的读得到。
+        # 两者混在一起时，密钥问题会伪装成评测失败，极难排查。
+        if: steps.keycheck.outputs.skip == 'false'
+        run: python -m eval config
+
+      - name: 执行质量评测并对比基线
         if: steps.keycheck.outputs.skip == 'false'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -261,22 +272,58 @@ jobs:
           EXTRA=""
           if [ "${{ inputs.enable_judge }}" = "true" ]; then EXTRA="$EXTRA --judge"; fi
           if [ "${{ inputs.enable_semantic }}" = "true" ]; then EXTRA="$EXTRA --semantic"; fi
-          python -m eval run --dataset "${{ steps.ds.outputs.value }}" $EXTRA
 
-      - name: 基线对比
-        if: steps.keycheck.outputs.skip == 'false'
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
-        run: |
+          # 只跑一次评测，基线对比在同一次运行里完成。
+          #
+          # 早先这里拆成两步：先 run，再另起一步 run --compare-baseline。
+          # 那样等于把全套评测跑两遍，API 成本直接翻倍，
+          # 而且两次调用的模型输出不同，对比的是「两次不同采样」而非
+          # 「本次 vs 上次」，结论本身就不干净。
+          #
+          # 现在一次运行同时做对比与保存（CLI 内部保证
+          # 「先读旧基线做对比，再写新基线」，不会自己比自己）。
           if [ -f reports/baseline.json ]; then
-            python -m eval run --dataset "${{ steps.ds.outputs.value }}" \
-              --compare-baseline || true
+            MODE="--compare-baseline --save-baseline"
+            echo "::notice::发现已有基线，本次将做退化对比"
           else
-            python -m eval run --dataset "${{ steps.ds.outputs.value }}" \
-              --save-baseline
+            MODE="--save-baseline"
+            echo "::notice::尚无基线，本次将建立基线（下次起可检测退化）"
           fi
+
+          set +e
+          python -m eval run --dataset "${{ steps.ds.outputs.value }}" \
+            $MODE $EXTRA
+          code=$?
+          set -e
+          echo "评测退出码：$code"
+
+          # 退出码语义与 Mock job 保持一致：
+          #   0/1 → 链路正常完成（0=门禁通过，1=门禁拦下或检出退化）
+          #   2   → 配置错误，链路未启动
+          #   3   → 数据错误，数据集不合法
+          #   4   → 运行错误，评测崩溃
+          #
+          # 关键：门禁拦下缺陷（1）是评测系统正常工作的证据，不是它坏了。
+          # 真实评测用的是会犯错的模型，门禁失败是预期结果。
+          # 把它当成 CI 失败，等于让 CI 永远变红，久而久之就没人看了。
+          case "$code" in
+            0)
+              echo "::notice::门禁通过：所有指标达标"
+              ;;
+            1)
+              echo "::warning::门禁未通过 / 检出退化。"
+              echo "::warning::这是评测系统在正常工作——它拦住了缺陷。"
+              echo "::warning::详见下方报告制品。"
+              ;;
+            2|3|4)
+              echo "::error::评测链路异常（退出码 $code），这不是门禁判定结果"
+              exit "$code"
+              ;;
+            *)
+              echo "::error::非预期退出码：$code"
+              exit 1
+              ;;
+          esac
 
       - name: 上传报告制品
         if: always()

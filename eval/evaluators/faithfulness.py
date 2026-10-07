@@ -63,17 +63,30 @@ _STOPWORDS = set(
     "怎么如何请问介绍定义进行过而且或者但如果因为所以它他她它们"
 )
 
-# 否定词：直接影响声明极性，验证时必须区分
-_NEGATIONS = {"不", "没有", "无", "非", "未", "不会", "不能", "不应", "不是"}
-
-# 事实性提示词：出现这些词说明句子在陈述事实，需严格验证
-_FACTUAL_MARKERS = {
-    "是", "为", "包括", "包含", "需要", "必须", "应该", "可以",
-    "由", "通过", "使用", "负责", "用于",
-}
-
 # 主张极性模式
+#
+# 情态词检测（原先定义在此但从未被调用，2026-10-07 已接线到 verify_claim）。
+#
+# 识别「对未知事实做推测」这类幻觉：
+#   上下文：「框架分为基础层、用例层、数据层」
+#   回答：「可能还包含其他层」
+# 这类回答字面重合度高、语气也不可疑，光看覆盖率抓不到，
+# 但它确实在编造上下文里没有的信息。
 _MODAL_PATTERN = re.compile(r"(可能|也许|通常|一般|建议|推荐|应该|可以)")
+
+# ---- 以下两个集合曾定义于此但从未被使用，2026-10-07 删除 ----
+#
+# _NEGATIONS = {"不", "没有", "无", "非", "未", ...}
+#   否定检测实际用_has_negation_conflict() 里的正则 [不无非未]，
+#   因为需要判断「双方极性是否相反」而非「是否含否定词」，
+#   集合只能回答后者，表达力不够。留两套会让人以为改集合能生效。
+#
+# _FACTUAL_MARKERS = {"是", "为", "包括", "包含", ...}
+#   设想是「出现这些词说明在陈述事实，需严格验证」。
+#   但实际上中文里"是""为"几乎出现在任何陈述句中，
+#   命中率接近 100%，等于没有筛选作用。
+#   真要区分陈述句与推测句，该用 _MODAL_PATTERN（反方向）。
+#   保留一个恒为真的判断比不判断更糟：它会给人虚假的保障感。
 
 
 def content_chars(text: str) -> set:
@@ -234,6 +247,28 @@ def verify_claim(claim: str, context: str,
             reason="声明与上下文极性相反（一方含否定，另一方不含）",
         )
 
+    # ---- 情态词推测检测 ----
+    #
+    # 上下文里写着"仅支持 3层"，回答却说"可能包含更多层"——
+    # 这类「对未知事实做推测」是幻觉的典型形态，
+    # 而且用词往往很正常，光看字面重合度抓不到。
+    #
+    # 规则：情态词出现，且该声明**没有**被上下文完全支撑时，
+    # 降一级并说明原因。
+    #
+    # 不在「完全支撑」时直接判unsupported，是因为
+    # 上下文里本身也可能写"通常建议…"——
+    # 那种情况下声明是照抄上下文，不算推测。
+    if _MODAL_PATTERN.search(claim) and best_cov < supported_threshold:
+        return Claim(
+            text=claim, supported=False, support_level="partial",
+            matched_evidence=[best_sentence] if best_sentence else [],
+            reason=(f"声明含推测性措辞"
+                    f"（{_MODAL_PATTERN.search(claim).group()}）"
+                    f"且未获上下文完整支撑，"
+                    f"实词覆盖率 {best_cov:.2f}"),
+        )
+
     # ---- 阈值判定 ----
     if best_cov >= supported_threshold:
         return Claim(
@@ -254,7 +289,8 @@ def verify_claim(claim: str, context: str,
 
 
 def verify_forbidden_facts(claim: str, forbidden_facts: List[str],
-                           context: str) -> List[str]:
+                           context: str,
+                           forbidden_match: float = 0.8) -> List[str]:
     """
     检查声明是否命中禁止事实
 
@@ -262,6 +298,11 @@ def verify_forbidden_facts(claim: str, forbidden_facts: List[str],
         required_facts = ["基础层", "用例层", "数据层"]
         forbidden_facts = ["报告层", "业务层"]
     回答说"分为基础层、用例层、业务层" → 命中 forbidden → 幻觉
+
+    forbidden_match
+    ----------------
+    部分匹配的覆盖率阈值。原先硬编码 0.8，
+    导致阈值无法集中管理（改成参数前它连函数外都传不进来）。
     """
     hits = []
     for ff in forbidden_facts or []:
@@ -273,7 +314,7 @@ def verify_forbidden_facts(claim: str, forbidden_facts: List[str],
             continue
         # 部分匹配：禁止事实的核心字大多出现在声明中
         claim_core = content_chars(claim)
-        if ff_core and len(ff_core & claim_core) / len(ff_core) >= 0.8:
+        if ff_core and len(ff_core & claim_core) / len(ff_core) >= forbidden_match:
             hits.append(ff)
     return hits
 
@@ -287,11 +328,24 @@ def detect_hallucination(answer: str, context: str,
                         supported_threshold: float = 0.6,
                         partial_threshold: float = 0.35,
                         should_refuse: bool = False,
-                        refusal_markers: Optional[List[str]] = None) -> dict:
+                        refusal_markers: Optional[List[str]] = None,
+                        forbidden_match: float = 0.8,
+                        required_hit: float = 0.5) -> dict:
     """
     声明级幻觉检测
 
     完整流程：证据检索 → 声明抽取 → 声明验证 → 无依据声明检测
+
+    阈值参数
+    --------
+    supported_threshold  覆盖率高于此值判为「有支撑」
+    partial_threshold    覆盖率低于此值判为「无支撑」
+    forbidden_match      forbidden 事实的字符覆盖率阈值
+    required_hitrequired 事实的字符覆盖率阈值
+
+    这些参数原先只有前两个可调，后两个硬编码在函数体里，
+    导致「阈值集中管理」做不到——改了配置也没用。
+    现在全部开放，并统一走 eval.thresholds 取默认值。
 
     返回
     ----
@@ -310,7 +364,11 @@ def detect_hallucination(answer: str, context: str,
     旧实现对"中国的首都是上海"判定无幻觉（覆盖率 1.0）。
     本实现会先检出"上海"与上下文事实矛盾 → 判为 unsupported。
     """
-    markers = refusal_markers or ["未提及", "没有相关", "无法回答", "不知道", "不明确"]
+    # 拒答词表改用全项目统一定义（REFUSAL_MARKERS）。
+    # 早先这里硬编码了 5 个词，而 correctness.py 用的是另一份 7 个，
+    # 导致同一个回答在两个评测器里判定不一致。
+    from eval.evaluators.correctness import REFUSAL_MARKERS
+    markers = refusal_markers or list(REFUSAL_MARKERS)
 
     result = {
         "has_hallucination": False,
@@ -361,7 +419,8 @@ def detect_hallucination(answer: str, context: str,
         )
 
         # 叠加 forbidden 事实检测
-        hits = verify_forbidden_facts(c_text, forbidden_facts, context)
+        hits = verify_forbidden_facts(c_text, forbidden_facts, context,
+                                      forbidden_match=forbidden_match)
         if hits:
             claim.supported = False
             claim.support_level = "unsupported"
@@ -404,7 +463,7 @@ def detect_hallucination(answer: str, context: str,
         rf_chars = content_chars(rf)
         if not rf_chars:
             continue
-        if len(rf_chars & answer_chars) / len(rf_chars) < 0.5:
+        if len(rf_chars & answer_chars) / len(rf_chars) < required_hit:
             result["missing_required"].append(rf)
 
     # ---- Step 6: 结论 ----
@@ -419,3 +478,38 @@ def detect_hallucination(answer: str, context: str,
         result["reason"] = f"{len(claims)} 条声明均有上下文依据"
 
     return result
+
+
+# ============================================================
+# 统一返回结构适配
+# ============================================================
+def to_eval_result(raw: Dict[str, Any]):
+    """
+    把detect_hallucination 的返回值包装成统一的 EvalResult。
+
+    为什么用适配而不是改detect_hallucination 本身
+    ---------------------------------------------
+    幻觉检测是全项目最核心、调用点最多的函数
+    （runner、mutation、validation、tests 共几十处），
+    而且它的返回结构信息量很大：
+    claims / unsupported_claims / forbidden_hits / coverage。
+
+    直接改返回值风险高，而统一结构的需求只要求
+    「能拿到 score / passed / reason / evaluator」。
+    所以这里做一层适配：
+      · score     → coverage（有据性覆盖率）
+      · passed    → not has_hallucination
+      · 其余全部字段进 details，一样都不丢
+
+    这样统一结构与向后兼容同时成立。
+    """
+    from eval.evaluators.base import EvalResult
+
+    has_hall = bool(raw.get("has_hallucination"))
+    return EvalResult(
+        score=raw.get("coverage"),
+        passed=not has_hall,
+        reason=raw.get("reason", ""),
+        evaluator="faithfulness",
+        details=dict(raw),
+    )

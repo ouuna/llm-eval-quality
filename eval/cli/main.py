@@ -203,7 +203,6 @@ def cmd_run(args):
     from eval.baseline import (
         compare, save_baseline, load_baseline, extract_metrics,
     )
-    from eval.reporting import load_results
 
     current_metrics = {
         k: v.value for k, v in result.report.metrics.items() if v.available
@@ -211,6 +210,42 @@ def cmd_run(args):
 
     exit_code = EXIT_OK if result.report.gate_passed else EXIT_GATE_FAILED
 
+    # 顺序至关重要：必须先把「上一版基线」读出来，再决定是否覆盖它。
+    #
+    # 反过来写（先save 后 load）会拿本次结果跟自己比，差值恒为 0，
+    # 于是无论质量退化多严重都输出「无退化」——
+    # 这是整个基线机制里最隐蔽的一种假通过，必须避免。
+    previous_baseline = load_baseline() if args.compare_baseline else None
+
+    if args.compare_baseline:
+        if not previous_baseline:
+            if not args.json:
+                print(f"\n[ERROR] 无基线可对比，请先运行 --save-baseline",
+                      file=sys.stderr)
+            return EXIT_DATA_ERROR
+
+        current_meta = {"model": result.report.model,
+                        "dataset": result.report.dataset_name}
+
+        cmp = compare(
+            current_metrics, previous_baseline.get("metrics", {}),
+            tolerance=args.tolerance,
+            baseline_source=previous_baseline.get("meta", {}).get(
+                "time", "unknown"),
+            baseline_meta=previous_baseline.get("meta", {}),
+            current_meta=current_meta,
+        )
+        print()
+        print(cmp.text())
+
+        # 只有在确实可比、且真的检出退化时才判失败。
+        # 不可比时 has_regression 恒为 False —— 拿 mock 基线去比真实结果
+        # 必然显示「大幅退化」，那不是退化，那是数据来源不同。
+        if cmp.has_regression:
+            exit_code = EXIT_GATE_FAILED
+
+    # 保存放在对比之后：本次结果成为「下一版」的基线，
+    # 但不会污染本次的对比对象。
     if args.save_baseline:
         p = save_baseline(
             current_metrics,
@@ -220,25 +255,6 @@ def cmd_run(args):
         )
         if not args.json:
             print(f"\n基线已保存：{p}")
-
-    if args.compare_baseline:
-        bl = load_baseline()
-        if not bl:
-            if not args.json:
-                print(f"\n[ERROR] 无基线可对比，请先运行 --save-baseline",
-                      file=sys.stderr)
-            return EXIT_DATA_ERROR
-
-        cmp = compare(
-            current_metrics, bl.get("metrics", {}),
-            tolerance=args.tolerance,
-            baseline_source=bl.get("meta", {}).get("time", "unknown"),
-        )
-        print()
-        print(cmp.text())
-
-        if cmp.has_regression:
-            exit_code = EXIT_GATE_FAILED
 
     return exit_code
 

@@ -60,8 +60,17 @@ DEFAULT_JUDGE_CONFIG = {
     "temperature": 0.0,            # 0 以减少刻度漂移
     "score_min": 0,
     "score_max": 5,
-    # 分数低于此值视为有问题
-    "pass_threshold": 3,
+    # 通过阈值，**0~1 刻度**（与 JudgeResult.scores 一致）。
+    #
+    # 刻度修正记录（2026-10-07）：
+    # 原值是 3，对应 0~5 刻度。但构造 JudgeResult 时会调用
+    # normalize_scores() 把分数除以 score_max 归一化到 0~1，
+    # 而这个阈值从来没被使用过——所以没暴露出刻度不匹配。
+    # 一旦接线就会发现：任何分数都 >= 0.6，判定永远为通过。
+    #
+    # 0.6 的来历：0~1 刻度下 3/5 的位置。
+    # 它是工程初始值，未在独立标注集上校准，见 eval/thresholds.py。
+    "pass_threshold": 0.6,
 }
 
 
@@ -82,6 +91,10 @@ class JudgeResult:
     attempts: int = 0
     model: str = ""
     latency_ms: int = 0
+    # 判定阈值（0~1 刻度，与 scores 一致）。
+    # 由 JudgeClient 在构造时从配置注入，不依赖模块级常量——
+    # 否则同一进程里改配置不会影响这里的判定。
+    pass_threshold: float = 0.6
 
     @property
     def final_score(self) -> Optional[float]:
@@ -94,11 +107,46 @@ class JudgeResult:
             return None
         return round(sum(self.scores.values()) / len(self.scores), 3)
 
+    @property
+    def passed(self) -> Optional[bool]:
+        """
+        是否通过 Judge 判定。
+
+        判据是「五维里有任何一维低于 pass_threshold」，
+        而不是看平均分——平均分会掩盖单维塌陷：
+        五维中4 维满分 1 维0 分，均值 4.0 仍高于阈值 3，
+        但那一维 0 分恰恰是最要命的（比如faithfulness=0）。
+
+        返回 None 表示不可用（调用失败或没分数），
+        与「判定为不通过」区分开——
+        调用失败绝不能当成「有问题」或「没问题」。
+        """
+        if not self.available or not self.scores:
+            return None
+
+        threshold = self.pass_threshold
+        return all(v >= threshold for v in self.scores.values())
+
+    @property
+    def weak_dimensions(self) -> List[str]:
+        """
+        低于阈值的维度名。
+
+        排查时最有用的是「哪一维塌了」，
+        而不是笼统地说「Judge 判定不通过」。
+        """
+        if not self.scores:
+            return []
+        return [k for k, v in self.scores.items()
+                if v < self.pass_threshold]
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "available": self.available,
             "scores": self.scores,
             "final_score": self.final_score,
+            "passed": self.passed,
+            "weak_dimensions": self.weak_dimensions,
             "hallucination": self.hallucination,
             "reason": self.reason,
             "evidence": self.evidence,
@@ -366,6 +414,7 @@ class JudgeClient:
                 attempts=attempt,
                 model=self.model,
                 latency_ms=int((time.perf_counter() - start) * 1000),
+                pass_threshold=self.cfg["pass_threshold"],
             )
 
         # 全部重试失败 —— 显式报错，不伪造结果

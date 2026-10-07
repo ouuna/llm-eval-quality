@@ -1,0 +1,171 @@
+# ============================================================
+# 单元测试 + 接口测试
+#--------------------------------
+# 拆分理由
+# --------
+# 原先全部塞在一个 eval.yml（344 行、5 个 job）里，
+# 问题是：改一个「只影响单测」的小问题，
+# 也会触发真实 API 评测，CI 要跑十几分钟。
+#
+# 拆开后各档职责清晰：
+#   test.yml        本文件，纯离线，秒级 ← 每次提交都跑
+#   evaluation.yml  真实 API 评测+ 门禁
+#   regression.yml  变异测试 + 退化检测
+#
+# 三档之间的关系
+# ------------
+#   test.yml   提供快速反馈，失败时立刻知道是代码问题
+#   evaluation.yml  提供质量结论，但依赖 API 配额
+#   regression.yml    提供「能力有没有退化」的长期趋势
+#
+# 数据集规模（真实数字，不夸大）
+# --------------------------------
+#   smoke 8 条 / full 19 条 / extended 17 条 / gold_set 30 条
+# ============================================================
+
+name: Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [ opened, synchronize, reopened ]
+
+  push:
+    branches: [ main ]
+
+  workflow_dispatch:
+
+# 新提交取消旧的未完成运行——避免排队积压
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # Job 0：workflow 自身语法检查
+  #
+  # 必须排在最前。workflow 有语法错误时整个文件作废，
+  # 这时若lint job 排在别人之后就永远不会执行——
+  # 正是「配置坏了，导致检查配置的步骤也跑不了」的死锁。
+  # ============================================================
+  workflow-lint:
+    name: Workflow 语法检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 检查 workflow 配置
+        run: python -m tests.check_workflow
+
+  # ============================================================
+  # Job 1：离线单元测试
+  #
+  # marker 分区让这一档不碰任何外部依赖：
+  #   pytest -m "not live and not perf" 是 pytest.ini 的默认值
+  # ============================================================
+  unit-tests:
+    name: 单元测试（离线）
+    runs-on: ubuntu-latest
+    needs: workflow-lint
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install pytest
+
+      - name: 跑离线测试
+        run: python -m pytest tests/ -v --tb=short
+
+      - name: 测试统计
+        # 统计用例会写进 job summary，
+        # 这样不看日志也能知道「这次跑了多少、过了多少」
+        if: always()
+        run: |
+          echo "### 单元测试" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- 命令：pytest tests/" >> $GITHUB_STEP_SUMMARY
+          echo "- 分区：not live and not perf（pytest.ini 默认）" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "离线测试不需要 API Key，任何 PR 都能立刻得到反馈。" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # Job 2：接口测试
+  #
+  # 启动本地 HTTP 服务做契约验证，不调用 LLM。
+  # 与单元测试分开是因为它需要起服务、行为不同。
+  # ============================================================
+  api-tests:
+    name: 接口测试
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install pytest
+
+      - name: 接口契约测试
+        run: python -m pytest tests/api/ -v --tb=short
+
+  # ============================================================
+  # Job 3：异常与边界测试
+  # ============================================================
+  negative-tests:
+    name: 异常测试
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install pytest
+
+      - name: 异常与边界测试
+        run: python -m pytest tests/negative/ -v --tb=short
+
+  # ============================================================
+  # Job 4：性能测试（Mock，不花 API 配额）
+  #
+  # 单独一个 job 的理由：性能测试偶尔会因环境抖动而失败，
+  # 不该让它阻塞单元测试的结果。
+  # ============================================================
+  perf-tests:
+    name: 性能测试
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install pytest
+
+      - name: 并发压测
+        run: python -m pytest tests/performance/ -v --tb=short -m perf
+
+      - name: 压测摘要
+        if: always()
+        run: python -m tests.performance.loadtest

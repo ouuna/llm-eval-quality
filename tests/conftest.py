@@ -1,20 +1,26 @@
 """
-pytest 共享 fixture
+pytest 共享 fixture 与 marker 分区
+---------------------------------
+本文件做两件事：
+1. 提供 `no_api_config` fixture（屏蔽全部配置来源）
+2. **自动给测试打 marker**
+
+为什么要自动打 marker
 -------------------
+项目里有500+ 个测试。逐个加 `@pytest.mark.offline` 会带来两个问题：
+  · 漏标——某个测试没标，默认就会跑它，可能因缺 API Key 而失败
+  · 维护成本——加测试时忘记加，等于埋雷
 
-`no_api_config` 用于测试「API 未配置时必须降级」这类逻辑。
+按目录与文件内容自动判定更可靠：
+    tests/performance/       → perf
+    tests/api/ tests/negative/ → api
+    文件里声明了 live 的     → live
+    其余                     → offline
 
-为什么需要它
-------------
-配置有两个来源：进程环境变量和项目根目录的 `.env` 文件。
-以前只有一个来源时，`monkeypatch.delenv` 就能模拟"未配置"；
-加入 `.env` 之后只清环境变量不够——`.env` 里的真实 key 仍会被读到，
-于是本该报"不可用"的用例反而拿到了可用配置，测试就假通过了。
-
-（这类假通过比直接失败更危险：它意味着降级逻辑其实没被测到。
- CI 上没有 `.env`，本地有，同一份代码两种行为。）
-
-所以凡是断言"未配置"的行为，都必须用这个 fixture 同时屏蔽两个来源。
+「live 怎么判定」是这里最需要小心的部分：
+用**是否引用了真实 Provider 或 live_api fixture** 来判断，
+而不是看文件名——因为叫 test_xxx.py 的文件里
+可能既有离线用例也有 live 用例。
 """
 
 import os
@@ -57,3 +63,105 @@ def no_api_config(monkeypatch, tmp_path):
     monkeypatch.setattr(env_loader, "ENV_FILE", str(empty_env))
 
     return empty_env
+
+
+# ============================================================
+# marker 自动分类
+# ============================================================
+
+# 目录 → marker 的映射
+_DIR_MARKERS = {
+    "performance": "perf",
+    "api": "api",
+    "negative": "api",
+}
+
+# 出现这些名字的 fixture / 变量，说明该测试需要真实 API
+_LIVE_HINTS = (
+    "live_api_server",
+    "http_sut_provider",
+    "sut_server",
+    "run_all_eval",
+)
+
+# 文件里出现这些标记，说明该文件的部分或全部测试需要真实 API。
+#
+# 为什么必须看内容而不是只看 fixture 名
+# ------------------------------------
+# tests/evaluators/test_judge.py 用的是
+#     @needs_api = pytest.mark.skipif(not API_AVAILABLE, ...)
+# 这种写法——没配key 时会跳过，配了就真跑。
+# 从 fixture 名上看不出来，只能读源码。
+#
+# 不做这一步的后果：本地有 API Key 时，
+# 「默认 pytest」会跑几十次真实 LLM 调用，
+# 三分钟都跑不完，于是大家干脆不跑了。
+_LIVE_SOURCE_HINTS = (
+    "@needs_api",
+    "@needs_api_key",
+    "pytest.mark.live",
+    "API_AVAILABLE",
+)
+
+
+def _file_needs_api(path: str) -> bool:
+    """读源码判断该文件是否涉及真实 API 调用"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            src = f.read()
+    except OSError:
+        return False
+    return any(h in src for h in _LIVE_SOURCE_HINTS)
+
+
+def pytest_collection_modifyitems(config, items):
+    """
+    给每个测试补上 marker。
+
+    规则（按优先级）：
+    1. 已显式声明的 marker 不动——显式优先于自动
+    2. 用到 live fixture 的 → live
+    3. 源码里含 needs_api / skipif 等真实 API 标记 → live
+    4. 位于性能测试目录的 → perf
+    5. 位于 API/异常测试目录的 → api
+    6. 其余 → offline
+    """
+    # 预先算好每个文件是否需要 API，避免逐个测试重复读盘
+    file_needs_api = {}
+
+    for item in items:
+        path = str(getattr(item, "fspath", ""))
+
+        # 1. 显式 marker 优先
+        if (item.get_closest_marker("live")
+                or item.get_closest_marker("perf")
+                or item.get_closest_marker("api")
+                or item.get_closest_marker("offline")):
+            continue
+
+        # 2. 依赖真实 API 的 fixture
+        fixturenames = set(getattr(item, "fixturenames", []))
+        if fixturenames & set(_LIVE_HINTS):
+            item.add_marker("live")
+            continue
+
+        # 3. 源码层面判断（结果按文件缓存）
+        if path not in file_needs_api:
+            file_needs_api[path] = _file_needs_api(path)
+        if file_needs_api[path]:
+            item.add_marker("live")
+            continue
+
+        # 4~5. 按目录判定
+        try:
+            rel = os.path.relpath(path, PROJECT_ROOT)
+        except ValueError:
+            rel = path
+
+        parts = rel.replace("\\", "/").split("/")
+        for part in parts[:-1]:
+            if part in _DIR_MARKERS:
+                item.add_marker(_DIR_MARKERS[part])
+                break
+        else:
+            item.add_marker("offline")

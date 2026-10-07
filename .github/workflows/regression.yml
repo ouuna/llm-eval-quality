@@ -1,0 +1,295 @@
+# ============================================================
+# 变异测试 + 基线退化检测
+#--------------------------------
+# 这一档回答的问题与其它两档不同：
+#
+#   test.yml        「代码能跑吗？」
+#   evaluation.yml  「被测系统质量如何？」
+#   regression.yml  「**我们的评测能力本身**有没有退化？」
+#
+# 为什么需要第三档
+# ----------------
+# 一个很容易被忽略的风险：
+# 改代码 → 评测器行为变了 → 分数虚高 → 缺陷漏到生产环境
+#
+# 而且这种退化**不会以任何形式暴露**：
+# CI 照样全绿，报告上的分数甚至更好看了。
+# 只有专门做变异测试才能发现。
+#
+# 两个核心手段
+# ------------
+#   1. 变异测试：故意把输入改坏，看评测器能不能发现
+#      → 回答「如果评测器是坏的，它会告诉我吗」
+#
+#   2. 基线对比：与上次的结果比，看质量有没有退步
+#      → 回答「这次比上次差了吗」
+#
+# 触发时机
+# --------
+#   push main   跑变异测试（离线，快）
+#   定时        跑基线对比（需要 API）
+# ============================================================
+
+name: Regression
+
+on:
+  push:
+    branches: [ main ]
+
+  schedule:
+    # 每日 03:00 UTC，与 evaluation.yml 错开一小时
+    - cron: '0 3 * * *'
+
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: 用于基线对比的数据集
+        required: false
+        default: 'smoke'
+        type: string
+
+concurrency:
+  group: regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-lint:
+    name: Workflow 语法检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 检查 workflow 配置
+        run: python -m tests.check_workflow
+
+  # ============================================================
+  # Job 1：变异测试（离线，不需要 API）
+  #
+  # 这是本workflow 的核心价值：
+  # 定期回答「评测器还可靠吗」。
+  # ============================================================
+  mutation-testing:
+    name: 变异测试（评测器可靠性）
+    runs-on: ubuntu-latest
+    needs: workflow-lint
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 变异测试用例
+        run: |
+          python -m pytest tests/mutation/ -v --tb=short
+
+      - name: 变异测试报告
+        # 变异检出率是「评测器能不能发现被改坏的输入」，
+        # 不是一个可以刷高的 KPI。
+        # 所以只报告、不设硬门禁——
+        # 把它做成门禁只会诱导人调低阈值。
+        run: python -m eval.mutation
+
+      - name: 写入步骤摘要
+        if: always()
+        run: |
+          {
+            echo "### 变异测试"
+            echo ""
+            echo "回答的问题：**如果评测器是坏的，它会告诉我吗？**"
+            echo ""
+            echo "\`\`\`"
+            python -m eval.mutation | head -24
+            echo "\`\`\`"
+            echo ""
+            echo "> 检出率低不代表评测器没用，"
+            echo "它说明只在这一类缺陷上可靠。"
+            echo "> 报告里的分类型表格就是明确的改进方向。"
+          } >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # Job 2：评测器可靠性验证（用人工标注的 Gold Set）
+  #
+  # 与变异测试互补：
+  #   变异测试 → 查漏报（该报的没报）
+  #   本 job→ 查误报（不该报的报了）
+  # ============================================================
+  evaluator-validation:
+    name: 评测器可靠性验证
+    runs-on: ubuntu-latest
+    needs: workflow-lint
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 用 Gold Set 测量评测器能力
+        # 早先这里读的是代码里未复核的样本，
+        # 导致永远返回 insufficient_data，
+        # 而 reports/ 里那份漂亮的报告是手工作业跑的。
+        run: python -m eval.evaluators.validation
+
+      - name: 历史缺陷回归集统计
+        run: python -m eval.datasets.regression
+
+  # ============================================================
+  # Job 3：Judge Bias 自检
+  #
+  # 为什么要单独一个 job
+  # ------------------
+  # LLM Judge 的失败模式很隐蔽：它**每次都输出格式正确的结果**——
+  # 五维打分、给出理由、列出证据。你无法从报告上看出它是瞎编的。
+  #
+  # 所以「Judge 本身可不可信」必须靠实测：
+  #   · 刻度漂移  同一输入多次打分差多少
+  #   · 位置偏好  A/B 交换顺序，分数是否变化
+  #   · 长度偏好  详尽回答是否系统性得高分
+  #
+  # 它很贵（每次检查要多次调用 LLM），
+  # 所以放定时任务而不是每次提交。
+  # ============================================================
+  judge-bias:
+    name: Judge Bias 自检
+    runs-on: ubuntu-latest
+    needs: workflow-lint
+    if: github.event_name == 'schedule'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 密钥检查
+        id: keycheck
+        env:
+          EVAL_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          EVAL_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          EVAL_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
+        run: |
+          if [ -z "$EVAL_API_KEY" ]; then
+            echo "::warning::未配置 API secrets，跳过 Judge 自检"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+      - name: 检测刻度漂移 / 位置偏好 / 长度偏好
+        # 检出问题时返回非 0，CI 变红——
+        # 因为那意味着「我们用的 Judge 不可信」，
+        # 必须有人知道并处理，而不是继续拿它的分数做决策。
+        if: steps.keycheck.outputs.skip == 'false'
+        run: python -m eval.judge_bias
+
+      - name: 写入步骤摘要
+        if: always() && steps.keycheck.outputs.skip == 'false'
+        run: |
+          {
+            echo "### Judge Bias 自检"
+            echo ""
+            echo '```'
+            python -m eval.judge_bias 2>&1 | head -40
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # Job 3：基线退化检测（需要 API）
+  # ============================================================
+  baseline-comparison:
+    name: 基线退化检测
+    runs-on: ubuntu-latest
+    needs: workflow-lint
+    # 只在定时与手动时跑：push 时质量结论由 evaluation.yml 负责
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 密钥检查
+        id: keycheck
+        env:
+          EVAL_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          EVAL_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          EVAL_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
+        run: |
+          if [ -z "$EVAL_API_KEY" ] || [ -z "$EVAL_BASE_URL" ] \
+          || [ -z "$EVAL_MODEL_NAME" ]; then
+            echo "::warning::未配置 API secrets，跳过基线对比"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+      - name: 检查是否有基线
+        id: hasbl
+        if: steps.keycheck.outputs.skip == 'false'
+        run: |
+          if [ -f reports/baseline.json ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "::notice::发现基线，将做退化对比"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::notice::尚无基线，本次将建立"
+          fi
+
+      - name: 评测并对比基线
+        if: steps.keycheck.outputs.skip == 'false'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL_NAME: ${{ secrets.OPENAI_MODEL_NAME }}
+        run: |
+          DATASET="${{ inputs.dataset || 'smoke' }}"
+
+          # 关键：一次运行同时做对比与保存。
+          #
+          # 早先拆成两步（先run，再另起一步 --compare-baseline），
+          # 那样等于把全套评测跑两遍，API 成本翻倍，
+          # 而且对比的是「两次不同采样」而非「本次 vs 上次」。
+          if [ "${{ steps.hasbl.outputs.exists }}" = "true" ]; then
+            MODE="--compare-baseline --save-baseline"
+          else
+            MODE="--save-baseline"
+          fi
+
+          set +e
+          python -m eval run --dataset "$DATASET" $MODE
+          code=$?
+          set -e
+
+          case "$code" in
+            0|1)
+              # 0=门禁通过，1=检出退化或门禁未通过。
+              # 两者都属于「评测正常完成」，由报告呈现细节。
+              echo "::notice::评测链路正常完成，退出码 $code"
+              ;;
+            2|3|4)
+              echo "::error::评测链路异常（退出码 $code）"
+              exit "$code"
+              ;;
+            *)
+              echo "::error::非预期退出码：$code"
+              exit 1
+              ;;
+          esac
+
+      - name: 上传报告
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: regression-reports-${{ github.run_number }}
+          path: reports/
+          retention-days: 30

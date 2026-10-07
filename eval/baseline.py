@@ -71,6 +71,8 @@ class BaselineComparison:
     deltas: List[Delta] = field(default_factory=list)
     has_regression: bool = False
     baseline_source: str = ""
+    comparable: bool = True
+    incomparable_reason: str = ""
 
     @property
     def regressions(self) -> List[Delta]:
@@ -85,6 +87,8 @@ class BaselineComparison:
         return {
             "has_regression": self.has_regression,
             "baseline_source": self.baseline_source,
+            "comparable": self.comparable,
+            "incomparable_reason": self.incomparable_reason,
             "regressions": [d.to_dict() for d in self.regressions],
             "improvements": [d.to_dict() for d in self.improvements],
             "deltas": [d.to_dict() for d in self.deltas],
@@ -92,6 +96,17 @@ class BaselineComparison:
 
     def text(self) -> str:
         lines = ["=" * 66, "Baseline Comparison", "=" * 66]
+
+        # 顺序很重要：不可比的判断必须排在「无数据」之前。
+        # 反过来的话，mock 基线这种「有文件但无可比指标」的情况
+        # 会走进无数据分支，把真正需要看到的提示吞掉。
+        if not self.comparable:
+            lines.append(f"⚠️ 基线不可比：{self.incomparable_reason}")
+            lines.append("")
+            lines.append("已跳过逐项对比。本次结果不参与退化判定。")
+            lines.append("=" * 66)
+            return "\n".join(lines)
+
         if not self.deltas:
             lines.append("无可对比的基线数据")
             return "\n".join(lines)
@@ -135,10 +150,52 @@ class BaselineComparison:
         return "\n".join(lines)
 
 
+def check_comparable(baseline_meta: Dict[str, Any],
+                     current_meta: Dict[str, Any]) -> tuple:
+    """
+    判断基线与当前结果是否可比。
+
+    为什么必须校验
+    --------------
+    基线对比的前提是「同一个东西的两个版本」。
+    如果拿 Mock 跑出来的基线去比真实 API 的结果，
+    或者拿 8 条的 smoke 基线去比 27 条的 smoke+full，
+    算出来的差值没有任何含义。
+
+    但这类对比照样会输出一张格式整齐、数字漂亮的表格，
+    人眼扫过去只会觉得"哦，有对比"，很难意识到它是无效的。
+    所以这里宁可拒绝对比，也不产出误导性的数字。
+    """
+    b_model = (baseline_meta or {}).get("model")
+    c_model = (current_meta or {}).get("model")
+
+    b_ds = (baseline_meta or {}).get("dataset")
+    c_ds = (current_meta or {}).get("dataset")
+
+    # Mock 与真实模型之间不可比
+    if b_model != c_model and "mock" in (str(b_model), str(c_model)):
+        return False, (
+            f"基线来自 {'Mock' if 'mock' in str(b_model) else 'Mock'}数据"
+            f"（model={b_model}），当前为真实 API 调用（model={c_model}）。"
+            f"Mock 是人工构造的固定输出，与真实模型输出不可比。"
+            f"请先用真实API 跑一次以建立基线。"
+        )
+
+    if b_ds != c_ds:
+        return False, (
+            f"数据集不同：基线为 {b_ds}，当前为 {c_ds}。"
+            f"不同数据集的用例难度与覆盖面不同，指标不可直接比较。"
+        )
+
+    return True, ""
+
+
 def compare(current: Dict[str, float],
              baseline: Dict[str, float],
              tolerance: float = 0.05,
-             baseline_source: str = "") -> BaselineComparison:
+             baseline_source: str = "",
+             baseline_meta: Dict[str, Any] = None,
+             current_meta: Dict[str, Any] = None) -> BaselineComparison:
     """
     对比当前与基线
 
@@ -146,8 +203,19 @@ def compare(current: Dict[str, float],
     ----
     tolerance  相对变化容忍度，默认 5%
                超过此幅度且方向为劣化 → 判为退化
+
+    baseline_meta / current_meta
+        两边的元信息（model / dataset）。提供时会先校验可比性；
+        不可比则跳过逐项对比，has_regression 恒为 False。
     """
     comparison = BaselineComparison(baseline_source=baseline_source)
+
+    if baseline_meta is not None and current_meta is not None:
+        ok, reason = check_comparable(baseline_meta, current_meta)
+        if not ok:
+            comparison.comparable = False
+            comparison.incomparable_reason = reason
+            return comparison
 
     for name, cur in current.items():
         if not isinstance(cur, (int, float)):
