@@ -27,7 +27,7 @@ PROJECT_ROOT = os.path.dirname(
 WORKFLOW_DIR = os.path.join(PROJECT_ROOT, ".github", "workflows")
 
 # 兼容旧引用（tests/test_check_workflow.py 等）
-WORKFLOW_PATH = os.path.join(WORKFLOW_DIR, "eval.yml")
+WORKFLOW_PATH = os.path.join(WORKFLOW_DIR, "test.yml")
 
 
 def all_workflow_paths():

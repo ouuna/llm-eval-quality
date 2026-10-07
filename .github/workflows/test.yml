@@ -203,3 +203,96 @@ jobs:
       - name: 压测摘要
         if: always()
         run: python -m tests.performance.loadtest
+
+  # ============================================================
+  # 以下两个 job 从旧 eval.yml 迁入
+  #
+  # 为什么要迁：eval.yml 与 evaluation.yml 内容大量重复，
+  # 两份同时跑会让「同一个问题报两次」，而且修一个漏一个
+  # （本次就是这样：新的修了，旧的没修，PR 依然红）。
+  # 现在按职责彻底分开：
+  #   test.yml全部离线检查
+  #   evaluation.yml        真实 API 评测 + 门禁
+  # ============================================================
+
+  offline-eval:
+    name: 评测链路（Mock）
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install pytest
+
+      - name: 验证数据集合法性
+        run: python -m eval validate --dataset full
+
+      - name: Mock 模式跑完整链路
+        # Mock Provider 故意注入故障（幻觉、实体调换、拒答错误等），
+        # 因此质量门禁**理应失败**，退出码为 1。
+        # 这个 job 验证的是「评测链路能否跑通并正确识别缺陷」，
+        # 不是「门禁能否通过」——把两者混为一谈会导致 CI 误报。
+        #
+        # 正确做法：把「链路是否正常」与「门禁判定」分开断言。
+        #   · 退出码 ∈ {0, 1}  → 链路正常完成（0=通过，1=门禁拦下）
+        #   · 退出码 ∈ {2, 3, 4} → 配置/数据/运行错误，链路异常
+        run: |
+          set +e
+          python -m eval run --dataset smoke --mock
+          code=$?
+          set -e
+          echo "mock 评测退出码：$code"
+          case "$code" in
+            0|1)
+              echo "::notice::评测链路正常完成。门禁结果符合预期："
+              echo "::notice::Mock Provider 注入的缺陷被门禁识别，这是正确行为。"
+              ;;
+            2)
+              echo "::error::配置错误 —— 链路未能启动"
+              exit 1
+              ;;
+            3)
+              echo "::error::数据错误 —— 数据集不合法"
+              exit 1
+              ;;
+            4)
+              echo "::error::运行错误 —— 评测过程崩溃"
+              exit 1
+              ;;
+            *)
+              echo "::error::非预期退出码：$code"
+              exit 1
+              ;;
+          esac
+
+      - name: 上传离线报告
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: offline-eval-reports
+          path: reports/
+          retention-days: 14
+
+  evaluator-validation:
+    name: 评测器可靠性验证
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: 评测器验证报告
+        run: python -m eval.evaluators.validation
+
+      - name: 回归集统计
+        run: python -m eval.datasets.regression

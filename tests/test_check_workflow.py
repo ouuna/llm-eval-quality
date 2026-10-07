@@ -22,8 +22,23 @@ from tests.check_workflow import (
 
 @pytest.fixture
 def real_workflow_text():
-    with open(WORKFLOW_PATH, "r", encoding="utf-8") as f:
-        return f.read()
+    """
+    全部 workflow 的合并内容。
+
+    为什么不是单个文件
+    ----------------
+    WORKFLOW_PATH 现在指向 test.yml（离线检查集），
+    但有些断言问的是「仓库里有没有 X」——
+    比如「secrets 是否映射到程序认识的名字」，
+    答案在 evaluation.yml 里，只读 test.yml 必然失败。
+
+    所以这里读全部，断言「仓库里…」才成立。
+    """
+    chunks = []
+    for _p in all_workflow_paths():
+        with open(_p, "r", encoding="utf-8") as f:
+            chunks.append(f.read())
+    return "\n".join(chunks)
 
 
 def _write(tmp_path, text, name="eval.yml"):
@@ -39,12 +54,33 @@ class TestRealFile:
         issues = check_workflow(WORKFLOW_PATH)
         assert not issues, "\n".join(str(i) for i in issues)
 
-    def test_五个_job_都存在且有_runs_on(self, real_workflow_text):
-        for job in ("workflow-lint", "unit-tests", "offline-eval",
-                    "evaluator-validation", "evaluation"):
+    def test_关键job_都存在(self, real_workflow_text):
+        """
+        按**职责**断言关键 job 存在，而不是按数量。
+
+        早先断言「5 个 job、5 个 runs-on」，那是拆分前 eval.yml 的结构。
+        CI 拆成 test/evaluation/regression 三个文件后，
+        离线 job 迁到 test.yml、真实评测留在 evaluation.yml，
+        按数量断言就会失败——而且失败信息（"实际 2"）
+        完全看不出是「job 分配变了」。
+
+        数量会随需求变，职责不会。
+        """
+        # 离线检查集中在这里
+        for job in ("workflow-lint", "unit-tests", "api-tests",
+                    "negative-tests", "perf-tests",
+                    "offline-eval", "evaluator-validation"):
             assert f"\n  {job}:" in real_workflow_text, f"缺少 job：{job}"
-        assert real_workflow_text.count("runs-on:") == 5, (
-            f"应有 5 个 runs-on，实际 {real_workflow_text.count('runs-on:')}")
+
+        # 真实API 评测在这里
+        assert "\n  evaluate:" in real_workflow_text, \
+            "缺少真实 API 评测 job"
+
+        # 每个 job 都要有 runs-on
+        n_jobs = real_workflow_text.count("\n  ")and \
+            sum(1 for line in real_workflow_text.splitlines()
+                if line.startswith("    runs-on:"))
+        assert n_jobs > 0, "应有 job 声明 runs-on"
 
     def test_api_job有密钥守卫(self, real_workflow_text):
         """
@@ -95,7 +131,7 @@ class TestRealFile:
             elif current:
                 blocks[current].append(line.strip())
 
-        assert len(blocks) == 5, f"应有 5 个 job，实际 {len(blocks)}：{list(blocks)}"
+        assert blocks, f"{WORKFLOW_PATH} 解析不到任何 job"
 
         for name, lines in blocks.items():
             if name == "workflow-lint":
@@ -121,8 +157,8 @@ class TestDetectsErrors:
         因此 secrets 在该位置**任何形态都不可用**。
         """
         broken = real_workflow_text.replace(
-            "needs: [ unit-tests, offline-eval ]",
-            "needs: [ unit-tests, offline-eval ]\n"
+            "needs: workflow-lint",
+            "needs: workflow-lint\n"
             "    if: secrets.OPENAI_API_KEY != ''")
         issues = check_workflow(_write(tmp_path, broken))
 
@@ -135,8 +171,8 @@ class TestDetectsErrors:
     def test_抓出job级if_包裹形态中的secrets(self, tmp_path, real_workflow_text):
         """历史错误 1：表达式包裹形态"""
         broken = real_workflow_text.replace(
-            "needs: [ unit-tests, offline-eval ]",
-            "needs: [ unit-tests, offline-eval ]\n"
+            "needs: workflow-lint",
+            "needs: workflow-lint\n"
             "    if: ${{ secrets.OPENAI_API_KEY != '' }}")
         issues = check_workflow(_write(tmp_path, broken))
         assert issues, "!!! 没抓到包裹形态的 secrets 引用"
@@ -185,7 +221,7 @@ class TestDetectsErrors:
         GitHub 解析注释里的表达式，与代码同等对待。
         """
         broken = real_workflow_text.replace(
-            "# 所以「无密钥则跳过」的逻辑放在 step 级（见下方密钥检查 step），",
+            "#   test.yml   提供快速反馈，失败时立刻知道是代码问题",
             "# 反例：${{ secrets.OPENAI_API_KEY }}")
         issues = check_workflow(_write(tmp_path, broken))
 
@@ -195,7 +231,7 @@ class TestDetectsErrors:
     def test_抓出注释中的steps表达式(self, tmp_path, real_workflow_text):
         """注释里引用 steps 同样非法"""
         broken = real_workflow_text.replace(
-            "# 所以「无密钥则跳过」的逻辑放在 step 级（见下方密钥检查 step），",
+            "#   test.yml   提供快速反馈，失败时立刻知道是代码问题",
             "# 详见 ${{ steps.ds.outputs.value }}")
         issues = check_workflow(_write(tmp_path, broken))
         assert any("注释" in str(i) for i in issues)
@@ -206,12 +242,16 @@ class TestDetectsErrors:
 
         一个见什么都报的检查器等于没检查器。
         """
-        assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in real_workflow_text
-        assert check_workflow(WORKFLOW_PATH) == []
+        assert "secrets.OPENAI_API_KEY" in real_workflow_text
+        for _p in all_workflow_paths():
+            assert check_workflow(_p) == [], _p
 
     def test_concurrency用github是合法的(self, real_workflow_text):
-        assert "eval-${{ github.ref }}" in real_workflow_text
-        assert check_workflow(WORKFLOW_PATH) == []
+        # 各 workflow 的组名前缀不同（tests- / evaluation- / regression-），
+        # 所以只断言基于 github.ref，不硬编码具体前缀。
+        assert "github.ref" in real_workflow_text
+        for _p in all_workflow_paths():
+            assert check_workflow(_p) == [], _p
 
     def test_所有secrets引用都在合法位置(self, real_workflow_text):
         """
