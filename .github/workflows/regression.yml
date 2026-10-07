@@ -66,6 +66,15 @@ jobs:
       - name: 检查 workflow 配置
         run: python -m tests.check_workflow
 
+      - name: 检查未定义名称
+        # 必须在单元测试之前跑。
+        #
+        # 真实案例：faithfulness.py 缺 Dict 导入，
+        # 本机 3.14 测试全绿，CI 的 3.11 直接 NameError，
+        # 连带 10 个测试文件全部收集失败——
+        # 报的是「测试出错」，真凶在几百行之前的 import。
+        run: python -m tests.check_undefined_names
+
   # ============================================================
   # Job 1：变异测试（离线，不需要 API）
   #
