@@ -72,6 +72,18 @@ jobs:
         # 放在单元测试之前，失败信息就直指真正的原因。
         run: python -m tests.check_undefined_names
 
+      - name: CI 环境自检
+        # 屏蔽全部 API 配置跑一遍，确认测试不依赖本机 .env。
+        #
+        # 真实案例：test_cli_baseline.py 本地 7 passed、
+        # CI 5 failed（退出码全是 2），因为 cmd_run 开头
+        # 有 check_config(require_api=True)，而测试的 mock=False。
+        #
+        # 也就是说：**测试能不能过取决于运行机器上有没有 .env**。
+        # 这个检查让「本地过 CI 挂」在提交前就暴露，
+        # 而不是靠 push 一轮等几分钟才发现。
+        run: python -m tests.simulate_ci
+
   # ============================================================
   # Job 1：离线单元测试
   #
